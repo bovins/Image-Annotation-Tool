@@ -1,0 +1,15 @@
+# 旧备份压缩包
+*.7z
+*.zip
+*.rar
+
+# 系统/编辑器文件
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# 临时目录
+.npmcache/
+node_modules/

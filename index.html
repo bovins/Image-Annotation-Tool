@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图像标注工具</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<script>
+/* 老旧浏览器检测（IE11 / 远古浏览器）：提示改用现代浏览器 */
+(function () {
+  var ok = true;
+  try { eval('var __f = function () { return 1; }; var __g = () => 1;'); } catch (e) { ok = false; }
+  try { var __c = document.createElement('canvas'); if (!__c.getContext || !__c.getContext('2d')) ok = false; } catch (e) { ok = false; }
+  if (ok && !window.Promise) ok = false;
+  if (!ok) {
+    document.write('<div style="padding:40px;font-family:Microsoft YaHei,sans-serif;line-height:2.2;color:#333">' +
+      '⚠️ 当前浏览器过于老旧，无法运行标注工具。<br>' +
+      '请使用现代浏览器：<b>Chrome 109+</b>、<b>Firefox 115 ESR+</b> 或 <b>Edge 109+</b>' +
+      '（这些是 Windows 7 最后支持的浏览器版本，安装后即可使用）。</div>');
+  }
+})();
+</script>
+
+<header class="topbar">
+  <div class="brand">🖍️ 图像标注工具</div>
+  <div class="actions">
+    <button class="btn primary" id="btnUpload">📤 上传图片</button>
+    <input type="file" id="fileInput" accept="image/*" hidden>
+    <button class="btn" id="btnExport" title="导出无损 PNG（图片外区域透明）">💾 导出 PNG</button>
+    <button class="btn" id="btnExportJpg" title="导出体积更小的 JPG（白色背景，速度更快）">🖼 导出 JPG</button>
+    <button class="btn" id="btnCopy" title="一键复制 PNG 到剪贴板，可直接粘贴">📋 复制 PNG</button>
+    <button class="btn" id="btnSave" title="保存工程（JSON，可再次载入编辑）">📦 保存工程</button>
+    <button class="btn" id="btnLoad" title="载入已保存的工程">📂 载入工程</button>
+    <input type="file" id="projectInput" accept=".json,application/json" hidden>
+    <span class="vsep"></span>
+    <button class="btn" id="btnUndo" title="撤销 Ctrl+Z">↩ 撤销</button>
+    <button class="btn" id="btnRedo" title="重做 Ctrl+Y">↪ 重做</button>
+    <button class="btn" id="btnDel" title="删除选中 Delete">🗑 删除</button>
+    <span class="vsep"></span>
+    <button class="btn" id="btnZoomOut" title="缩小">−</button>
+    <button class="btn" id="btnZoomPct" title="100% 显示">100%</button>
+    <button class="btn" id="btnZoomIn" title="放大">+</button>
+    <button class="btn" id="btnFit" title="适应窗口">适应窗口</button>
+    <span class="vsep"></span>
+    <button class="btn" id="btnTheme" title="切换亮/暗主题">🌙</button>
+  </div>
+</header>
+
+<div class="main">
+  <aside class="sidebar">
+    <div class="side-title">标注工具</div>
+    <button class="tool-btn active" data-tool="select"><span class="tico">🖱️</span>选择 / 移动</button>
+
+    <div class="group">
+      <div class="gtitle">基础类</div>
+      <button class="tool-btn" data-tool="text"><span class="tico">🅰️</span>文字</button>
+      <button class="tool-btn" data-tool="rect"><span class="tico">▭</span>矩形</button>
+      <button class="tool-btn" data-tool="msgbox"><span class="tico">💬</span>消息框</button>
+      <button class="tool-btn" data-tool="line"><span class="tico">╱</span>直线</button>
+      <button class="tool-btn" data-tool="curve"><span class="tico">〰</span>曲线</button>
+      <button class="tool-btn" data-tool="freehand"><span class="tico">✏️</span>手写</button>
+      <button class="tool-btn" data-tool="arrow"><span class="tico">➜</span>箭头</button>
+      <button class="tool-btn" data-tool="carrow"><span class="tico">➶</span>曲线箭头</button>
+      <button class="tool-btn" data-tool="step"><span class="tico">①</span>步骤序号</button>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">尺规类</div>
+      <button class="tool-btn" data-tool="dim"><span class="tico">📏</span>尺寸</button>
+      <button class="tool-btn" data-tool="angle"><span class="tico">📐</span>角度</button>
+      <button class="tool-btn" data-tool="area"><span class="tico">📊</span>面积</button>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">引出类</div>
+      <button class="tool-btn" data-tool="ctext"><span class="tico">📝</span>文字引出</button>
+      <button class="tool-btn" data-tool="cregion"><span class="tico">⭕</span>引出区域</button>
+      <button class="tool-btn" data-tool="cimage"><span class="tico">🖼️</span>图引出</button>
+      <button class="tool-btn" data-tool="cmulti"><span class="tico">🔗</span>多引出</button>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">放大镜</div>
+      <button class="tool-btn" data-tool="magnifier"><span class="tico">🔍</span>放大镜</button>
+      <button class="tool-btn" data-tool="smagnifier"><span class="tico">🔲</span>方放大镜</button>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">贴图类</div>
+      <button class="tool-btn" data-tool="sticker"><span class="tico">🏷️</span>贴图</button>
+      <button class="tool-btn" data-tool="mosaic"><span class="tico">🧩</span>马赛克</button>
+    </div>
+
+    <div class="group global-group">
+      <div class="gtitle">全局样式</div>
+      <div class="global-style" id="globalStyleBox"></div>
+    </div>
+  </aside>
+
+  <div class="stage">
+    <div class="stage-main">
+      <div class="tabbar" id="tabbar"></div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="c" width="900" height="600"></canvas>
+        <div class="drop-tip" id="dropTip">拖拽图片到此处，或点击上方「上传图片」<br>支持 Ctrl+V 粘贴剪贴板图片</div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="panel" id="panel">
+    <div id="panelContent"></div>
+    <div class="layers-box">
+      <div class="layers-head">
+        <span class="layers-title">图层</span>
+        <button class="btn small" id="btnAddLayer" title="新建图层">＋ 新建</button>
+      </div>
+      <div class="layers-list" id="layersList"></div>
+    </div>
+  </aside>
+</div>
+
+<footer class="hintbar" id="hint">请先上传图片，然后选择左侧标注工具开始标注。</footer>
+<div id="toast"></div>
+<div id="exporting"><div class="spinner"></div>正在导出图片…</div>
+
+<script src="vendor/fabric.min.js"></script>
+<script>window.fabric || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.5.2/fabric.min.js"><\/script>');</script>
+<script>window.fabric || document.write('<script src="https://unpkg.com/fabric@5.5.2/dist/fabric.min.js"><\/script>');</script>
+<script src="js/objects.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/app.js"></script>
+<script>if (!window.fabric) { document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#c33">Fabric.js 加载失败（本地与 CDN 均不可用），请检查网络后刷新页面。</div>'; }</script>
+</body>
+</html>
