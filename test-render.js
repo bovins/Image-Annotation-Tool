@@ -69,7 +69,7 @@ try {
   make('StepNumber', { left: 60, top: 140, originX: 'center', originY: 'center', number: 5, radius: 20 });
   make('CalloutText', { left: 0, top: 0, anchor: { x: 40, y: 180 }, textPos: { x: 130, y: 150 }, textContent: '引出' });
   make('MultiCallout', { left: 0, top: 0, anchors: [{ x: 10, y: 220 }, { x: 80, y: 230 }], textContent: '多引' });
-  make('CalloutRegion', { left: 0, top: 0, ellipse: { x: 180, y: 120, rx: 50, ry: 34 }, boxPos: { x: 250, y: 100 }, textContent: '区域' });
+  make('CalloutRegion', { left: 0, top: 0, ellipse: { x: 180, y: 120, rx: 50, ry: 34 }, textPos: { x: 250, y: 100 }, textContent: '区域' });
   make('CalloutImage', { left: 0, top: 0, region: { x: 20, y: 250, w: 60, h: 40 }, boxPos: { x: 100, y: 250 }, imgSrc: null });
   make('Dimension', { left: 0, top: 0, p1: { x: 200, y: 200 }, p2: { x: 320, y: 200 } });
   make('AngleMeasure', { left: 0, top: 0, v: { x: 220, y: 80 }, p1: { x: 280, y: 80 }, p2: { x: 220, y: 30 } });

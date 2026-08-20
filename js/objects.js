@@ -748,6 +748,15 @@
     if (this.textPos) this.textPos = sp(this.textPos);
     if (Array.isArray(this.anchors)) this.anchors = this.anchors.map(sp);
     if (Array.isArray(this.points)) this.points = this.points.map(sp);
+    if (Array.isArray(this.pts)) this.pts = this.pts.map(sp);
+    if (this.ellipse) {
+      this.ellipse = {
+        x: sx * this.ellipse.x + left - sx * ox,
+        y: sy * this.ellipse.y + top - sy * oy,
+        rx: Math.max(1, this.ellipse.rx * sx),
+        ry: Math.max(1, this.ellipse.ry * sy)
+      };
+    }
     if (this.tx && this.tx.fontSize) this.tx.fontSize = Math.max(6, Math.round(this.tx.fontSize * k));
     if (this.arrowLen) this.arrowLen = Math.max(4, this.arrowLen * k);
     if (this.arrowHalf) this.arrowHalf = Math.max(2, this.arrowHalf * k);
@@ -759,11 +768,15 @@
     }
     this.set('dirty', true);
   }
-  F.CalloutText.prototype.bakeScale = bakeContentScale;
-  F.MultiCallout.prototype.bakeScale = bakeContentScale;
-  F.SplinePath.prototype.bakeScale = bakeContentScale;
+  // 注册 bakeScale（置于文件末尾统一注册，类需先定义）
 
-  /* ================= 引出区域 ================= */
+  /* ================= 引出区域（椭圆区域 → 引出箭头线 → 水平线 → 线上文字，无方框） ================= */
+  // 椭圆上近似最近点（沿方向归一化，视觉足够精确）
+  function nearestEllipsePoint(e, tx, ty) {
+    const nx = (tx - e.x) / (e.rx || 1), ny = (ty - e.y) / (e.ry || 1);
+    const d = Math.hypot(nx, ny) || 1;
+    return { x: e.x + (nx / d) * e.rx, y: e.y + (ny / d) * e.ry };
+  }
   F.CalloutRegion = F.util.createClass(F.Object, {
     type: 'calloutRegion',
     initialize(opts) {
@@ -771,30 +784,67 @@
       this.textContent = opts.textContent || '区域';
       this.tx = Object.assign({}, DEF_TEXT, opts.tx || {});
       this.line = Object.assign({}, DEF_LINE, opts.line || {});
-      this.bg = Object.assign({}, DEF_BG, opts.bg || {});
       this.shape = Object.assign({}, DEF_SHAPE, { fillColor: '#ffffff', fillOpacity: 0.35 }, opts.shape || {});
       this.ellipse = opts.ellipse || { x: 0, y: 0, rx: 60, ry: 40 };
-      this.boxPos = opts.boxPos || { x: 80, y: -40 };
-      this.boxW = opts.boxW || 80; this.boxH = opts.boxH || 32;
+      // 旧工程兼容：boxPos → textPos（旧版是文字放在方框里）
+      if (opts.textPos) this.textPos = { x: opts.textPos.x, y: opts.textPos.y };
+      else if (opts.boxPos) this.textPos = { x: opts.boxPos.x, y: opts.boxPos.y };
+      else this.textPos = { x: this.ellipse.x + this.ellipse.rx + 30, y: this.ellipse.y - this.ellipse.ry - 70 };
       this.pad = 8;
+      this.arrowLen = 12;
       this.callSuper('initialize', opts);
+      // 放大手柄命中区，便于抓取拖动
+      this.cornerSize = 18;
+      this.touchCornerSize = 26;
       this.relayout();
+      this._rebuildControls();
+      this.objectCaching = false;
+    },
+    // 几何计算（拖动期间调用：只更新水平线/文字布局，不动包围盒，保持实时渲染）
+    computeGeometry() {
+      const m = TX.measure(this.textContent, this.tx, 1e9);
+      this.textW = m.w;
+      this.textH = m.h;
+      const tp = this.textPos;
+      // 水平引出线：长度只取决于文本长度（文字放在线上方）
+      this.leaderY = tp.y + this.textH;
+      this.x0 = tp.x - this.pad;
+      this.x1 = tp.x + this.textW + this.pad;
     },
     relayout() {
-      const maxW = Math.max(40, this.boxW - this.pad * 2);
-      const m = TX.measure(this.textContent, this.tx, maxW);
-      this.boxW = Math.max(this.boxW, m.w + this.pad * 2);
-      this.boxH = Math.max(this.boxH, m.h + this.pad * 2);
-      const e = this.ellipse, b = this.boxPos;
-      let left = Math.min(e.x - e.rx, b.x), top = Math.min(e.y - e.ry, b.y);
-      let right = Math.max(e.x + e.rx, b.x + this.boxW), bottom = Math.max(e.y + e.ry, b.y + this.boxH);
-      left -= 6; top -= 6; right += 6; bottom += 6;
+      this.computeGeometry();
+      const e = this.ellipse, tp = this.textPos;
+      const left = Math.min(e.x - e.rx, this.x0, tp.x) - 8;
+      const top = Math.min(e.y - e.ry, this.leaderY, tp.y) - 8;
+      const right = Math.max(e.x + e.rx, this.x1, tp.x + this.textW) + 8;
+      const bottom = Math.max(e.y + e.ry, this.leaderY, tp.y) + 8;
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
     },
+    pointToLocal(p) {
+      return { x: p.x - this._offX - this.contentW / 2, y: p.y - this._offY - this.contentH / 2 };
+    },
+    pointFromLocal(l) {
+      return { x: l.x + this._offX + this.contentW / 2, y: l.y + this._offY + this.contentH / 2 };
+    },
+    _rebuildControls() {
+      const controls = Object.assign({}, F.Object.prototype.controls);
+      // 区域手柄（椭圆中心，可拖动）
+      controls.region = makeDraggableControl(
+        o => ({ x: o.ellipse.x, y: o.ellipse.y }),
+        (o, p) => { o.ellipse = { x: p.x, y: p.y, rx: o.ellipse.rx, ry: o.ellipse.ry }; }
+      );
+      // 文字手柄（文字中心，可拖动）
+      controls.text = makeDraggableControl(
+        o => ({ x: o.textPos.x + o.textW / 2, y: o.textPos.y + o.textH / 2 }),
+        (o, p) => { o.textPos = { x: p.x - o.textW / 2, y: p.y - o.textH / 2 }; }
+      );
+      this.controls = controls;
+    },
     _render(ctx) {
       beginContent(ctx, this);
-      const e = this.ellipse, s = this.line, b = this.boxPos, sh = this.shape;
+      const e = this.ellipse, s = this.line, tp = this.textPos, sh = this.shape, ly = this.leaderY;
+      // 区域（椭圆，半透明填充 + 描边）
       fillStyle(ctx, sh);
       ctx.beginPath(); ctx.ellipse(e.x, e.y, e.rx, e.ry, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -803,32 +853,46 @@
         ctx.beginPath(); ctx.ellipse(e.x, e.y, e.rx, e.ry, 0, 0, Math.PI * 2);
         ctx.stroke();
       });
-      const bx = clamp(b.x + this.boxW / 2, e.x - e.rx, e.x + e.rx);
-      const by = clamp(b.y + this.boxH / 2, e.y - e.ry, e.y + e.ry);
-      const ex = clamp(bx, e.x - e.rx, e.x + e.rx);
-      const ey = clamp(by, e.y - e.ry, e.y + e.ry);
-      haloStroke(ctx, s, () => {
-        ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(bx, by); ctx.stroke();
-      });
-      const r = Math.min(this.bg.radius, this.boxW / 2, this.boxH / 2);
-      ctx.fillStyle = this.bg.fill; ctx.globalAlpha = this.bg.opacity;
-      ctx.beginPath();
-      roundRectPath(ctx, b.x, b.y, this.boxW, this.boxH, r);
-      ctx.fill();
-      resetAlpha(ctx);
+      // 水平引出线（长度 = 文本长度 + 边距，文字放在线上方）
       haloStroke(ctx, s, () => {
         ctx.beginPath();
-        roundRectPath(ctx, b.x, b.y, this.boxW, this.boxH, r);
+        ctx.moveTo(this.x0, ly);
+        ctx.lineTo(this.x1, ly);
         ctx.stroke();
       });
-      TX.draw(ctx, this.textContent, this.tx, b.x + this.pad, b.y + this.pad, this.boxW - this.pad * 2);
+      // 引出箭头线：从椭圆最近点直连水平线（拖动文字/区域时自动伸缩）
+      const px = clamp(e.x, this.x0, this.x1);
+      const near = nearestEllipsePoint(e, px, ly);
+      const dx = near.x - px, dy = near.y - ly;
+      const L = Math.hypot(dx, dy) || 1;
+      const ux = dx / L, uy = dy / L;
+      const hl = this.arrowLen + s.width * 2;
+      if (L > hl + 1) {
+        haloStroke(ctx, s, () => {
+          ctx.beginPath();
+          ctx.moveTo(px, ly);
+          ctx.lineTo(near.x - ux * hl, near.y - uy * hl);
+          ctx.stroke();
+        });
+      }
+      // 箭头（tip 指向椭圆区域，方向沿引出线，白色边框 + 实心）
+      haloFill(ctx, s, () => {
+        const tip = { x: near.x, y: near.y };
+        const h = arrowHeadPath(tip, ux, uy, hl, this.arrowLen * 0.55);
+        ctx.beginPath();
+        ctx.moveTo(tip.x, tip.y);
+        ctx.lineTo(h.x1, h.y1);
+        ctx.lineTo(h.x2, h.y2);
+        ctx.closePath();
+      });
+      // 文字（无方框，放在水平线上方）
+      TX.draw(ctx, this.textContent, this.tx, tp.x, tp.y, 1e9);
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
-        textContent: this.textContent, tx: this.tx, line: this.line, bg: this.bg,
-        shape: this.shape, ellipse: this.ellipse, boxPos: this.boxPos,
-        boxW: this.boxW, boxH: this.boxH
+        textContent: this.textContent, tx: this.tx, line: this.line,
+        shape: this.shape, ellipse: this.ellipse, textPos: this.textPos
       });
     }
   });
@@ -1239,7 +1303,27 @@
       this.callSuper('initialize', opts);
       this._offX = 0; this._offY = 0;
       this.relayout();
+      // 直线/箭头等少量端点可拖动修改；手写（大量点）不生成手柄
+      if (this.pts.length >= 2 && this.pts.length <= 6) this._rebuildControls();
       this.objectCaching = false;
+    },
+    // 拖动期间无需额外几何（渲染直接使用 pts），保留接口与其它类一致
+    computeGeometry() {},
+    pointToLocal(p) {
+      return { x: p.x - this._offX - this.contentW / 2, y: p.y - this._offY - this.contentH / 2 };
+    },
+    pointFromLocal(l) {
+      return { x: l.x + this._offX + this.contentW / 2, y: l.y + this._offY + this.contentH / 2 };
+    },
+    _rebuildControls() {
+      const controls = Object.assign({}, F.Object.prototype.controls);
+      this.pts.forEach((p, i) => {
+        controls['pt' + i] = makeDraggableControl(
+          o => o.pts[i],
+          (o, p) => { o.pts[i] = p; }
+        );
+      });
+      this.controls = controls;
     },
     relayout() {
       const pts = this.pts;
@@ -1351,6 +1435,14 @@
     'CalloutRegion', 'CalloutImage', 'Dimension', 'AngleMeasure', 'AreaMeasure',
     'Magnifier', 'SquareMagnifier', 'SplinePath', 'AnnoLine', 'AnnoRect'
   ].forEach(n => addFromObject(F[n]));
+
+  /* ---------- 角点缩放合并注册（类已全部定义） ---------- */
+  F.CalloutText.prototype.bakeScale = bakeContentScale;
+  F.MultiCallout.prototype.bakeScale = bakeContentScale;
+  F.SplinePath.prototype.bakeScale = bakeContentScale;
+  F.CalloutRegion.prototype.bakeScale = bakeContentScale;
+  F.AnnoLine.prototype.bakeScale = bakeContentScale;
+
 
   /* 暴露默认样式供 app 层使用 */
   window.DEF_TEXT = DEF_TEXT;

@@ -684,15 +684,14 @@
       window.APP && APP.focusContent();
     },
 
-    /* ---------- 引出区域 ---------- */
+    /* ---------- 引出区域（椭圆区域 → 引出线 → 水平线 → 线上文字） ---------- */
     startCregion(p) {
       const obj = new F.CalloutRegion({
         left: 0, top: 0,
         ellipse: { x: p.x, y: p.y, rx: 1, ry: 1 },
-        boxPos: { x: p.x + 90, y: p.y - 40 },
         textContent: '区域',
         tx: this.textP(), line: this.lineP(),
-        bg: Object.assign({}, window.APP.calloutBg), shape: this.shapeP(),
+        shape: this.shapeP(),
         minScaleLimit: 0.2
       });
       this.addTemp(obj);
@@ -702,7 +701,8 @@
     moveCregion(st, p) {
       const cx = (st.p0.x + p.x) / 2, cy = (st.p0.y + p.y) / 2;
       st.obj.ellipse = { x: cx, y: cy, rx: Math.abs(p.x - st.p0.x) / 2, ry: Math.abs(p.y - st.p0.y) / 2 };
-      st.obj.boxPos = { x: cx + Math.abs(p.x - st.p0.x) / 2 + 16, y: cy - 40 };
+      // 文字放在区域右上方（水平线上方）
+      st.obj.textPos = { x: cx + st.obj.ellipse.rx + 24, y: cy - st.obj.ellipse.ry - 60 };
       this.relayoutOnCanvas(st.obj);
     },
     finishCregion(st) {

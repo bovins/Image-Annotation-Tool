@@ -89,7 +89,7 @@ const docStub = {
 };
 global.document = docStub;
 global.Image = class {
-  constructor() { this.width = 0; this.height = 0; this.naturalWidth = 400; this.naturalHeight = 300; this._src = ''; }
+  constructor() { this.width = 0; this.height = 0; this.naturalWidth = 400; this.naturalHeight = 300; this._src = ''; this.toDataURL = () => 'data:image/png;base64,AAA'; }
   addEventListener() {}
   set src(v) { this._src = v; setTimeout(() => { if (this.onload) this.onload(); }, 0); }
   get src() { return this._src; }
@@ -239,6 +239,58 @@ function check(name, cond) {
   await tick();
   const after3 = screenOf(ct1, ct1.anchor);
   check('再次角点缩放仍不跳位', Math.hypot(after3.x - during3.x, after3.y - during3.y) < 1);
+
+  // ---- 4. 箭头控制点：直线/箭头端点可拖动修改 ----
+  M.select('arrow');
+  M.onDown({ e: { clientX: 60, clientY: 300, button: 0 } });
+  M.onMove({ e: { clientX: 220, clientY: 280, button: 0 } });
+  M.onUp({ e: { clientX: 220, clientY: 280, button: 0 } });
+  await tick();
+  const ar = CV.getObjects().find(o => o.type === 'annoLine' && o.arrowhead === 'end');
+  check('箭头有端点控制点', ar && ar.controls && ar.controls.pt0 && ar.controls.pt1);
+  const ar0 = screenOf(ar, ar.pts[0]);
+  CV.setActiveObject(ar);
+  CV.upperCanvasEl.dispatchEvent(mk(ar0.x, ar0.y, 'mousedown'));
+  docStub.dispatchEvent(mk(ar0.x - 40, ar0.y + 25, 'mousemove'));
+  docStub.dispatchEvent(mk(ar0.x - 40, ar0.y + 25, 'mouseup'));
+  await tick();
+  const ar0b = screenOf(ar, ar.pts[0]);
+  check('箭头端点拖动落点一致', Math.abs(ar0b.x - (ar0.x - 40)) < 0.01 && Math.abs(ar0b.y - (ar0.y + 25)) < 0.01);
+
+  // ---- 5. 引出区域新样式：区域→引出线→水平线→线上文字（无方框），可拖区域/文字手柄 ----
+  M.select('cregion');
+  M.onDown({ e: { clientX: 120, clientY: 200, button: 0 } });
+  M.onMove({ e: { clientX: 260, clientY: 150, button: 0 } });
+  M.onUp({ e: { clientX: 260, clientY: 150, button: 0 } });
+  await tick();
+  const cr = CV.getObjects().find(o => o.type === 'calloutRegion');
+  check('引出区域无方框(bg/boxPos)', cr && !('bg' in cr) && !('boxPos' in cr));
+  check('引出区域有区域/文字手柄', cr && cr.controls && cr.controls.region && cr.controls.text);
+  const th = screenOf(cr, { x: cr.textPos.x + cr.textW / 2, y: cr.textPos.y + cr.textH / 2 });
+  CV.setActiveObject(cr);
+  CV.upperCanvasEl.dispatchEvent(mk(th.x, th.y, 'mousedown'));
+  docStub.dispatchEvent(mk(th.x + 40, th.y + 15, 'mousemove'));
+  docStub.dispatchEvent(mk(th.x + 40, th.y + 15, 'mouseup'));
+  await tick();
+  const thb = screenOf(cr, { x: cr.textPos.x + cr.textW / 2, y: cr.textPos.y + cr.textH / 2 });
+  check('引出区域文字手柄拖动落点一致', Math.abs(thb.x - (th.x + 40)) < 0.01 && Math.abs(thb.y - (th.y + 15)) < 0.01);
+
+  // ---- 6. 保存工程：无 showSaveFilePicker 时降级下载不报错；有则走另存为 ----
+  let saveOk = true, wroteJson = false;
+  try {
+    const origPick = window.showSaveFilePicker;
+    window.showSaveFilePicker = undefined;
+    await els.btnSave.onclick();
+    await tick();
+    // 有 picker：写入 JSON
+    window.showSaveFilePicker = async () => ({
+      createWritable: async () => ({ write: async (s) => { wroteJson = !!s && s.length > 0; }, close: async () => {} })
+    });
+    await els.btnSave.onclick();
+    await tick();
+    window.showSaveFilePicker = origPick;
+  } catch (err) { saveOk = false; }
+  check('保存工程(另存为/降级)无异常', saveOk && wroteJson);
 
   // ---- 3. 打开第二张图 → 多标签切换 ----
   upload();

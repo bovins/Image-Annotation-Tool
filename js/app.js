@@ -788,7 +788,7 @@
       doCopy();
     }, 'image/png');
   }
-  function saveProject() {
+  async function saveProject() {
     if (!CV._baseImage) { toast('请先上传图片'); return; }
     const data = {
       app: 'image-annotator',
@@ -803,7 +803,25 @@
       layers: APP.layers,
       objects: CV.toJSON(EXTRA)
     };
-    download(JSON.stringify(data), 'annotation-project.json');
+    const json = JSON.stringify(data);
+    // 优先弹出「另存为」对话框让用户选择存放位置（Chrome/Edge 支持 File System Access API）
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: 'annotation-project.json',
+          types: [{ description: 'JSON 工程文件', accept: { 'application/json': ['.json'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(json);
+        await writable.close();
+        toast('工程已保存');
+        return;
+      } catch (err) {
+        if (err && err.name === 'AbortError') return; // 用户取消
+        // 其它异常（权限、旧浏览器等）降级为直接下载
+      }
+    }
+    downloadBlob(new Blob([json], { type: 'application/json' }), 'annotation-project.json');
     toast('工程已保存');
   }
   function loadProject(file) {
@@ -1229,6 +1247,9 @@
     } else if (t === 'annoLine') {
       p.appendChild(lineSection(obj.line, objLineApply(obj)));
       if (obj.arrowhead === 'end') p.appendChild(el('p', 'fnote', '箭头样式：实心箭头 + 白色描边'));
+      if (obj.pts && obj.pts.length >= 2 && obj.pts.length <= 6) {
+        p.appendChild(el('p', 'fnote', '选中后拖动蓝色圆点端点即可调整直线/箭头位置与方向。'));
+      }
     } else if (t === 'annoRect') {
       p.appendChild(shapeSection(obj.shape, objShapeApply(obj)));
     } else if (t === 'messageBox') {
@@ -1268,7 +1289,7 @@
       }
       if (t === 'calloutRegion') {
         p.appendChild(shapeSection(obj.shape, objShapeApply(obj)));
-        p.appendChild(bgSection(obj));
+        p.appendChild(el('p', 'fnote', '选中后拖动蓝色圆点：椭圆中心为「区域」手柄，文字中心为「文字」手柄，可分别调整位置；引出线自动连接。'));
       }
     } else if (t === 'splinePath') {
       p.appendChild(lineSection(obj.line, objLineApply(obj)));
@@ -1482,7 +1503,11 @@
         }, applyS));
         break;
       }
-      case 'line': case 'arrow': case 'freehand':
+      case 'line': case 'arrow':
+        p.appendChild(lineSection(lineTarget(), applyL));
+        p.appendChild(el('p', 'fnote', '画完后选中直线/箭头，拖动蓝色圆点端点可调整位置与方向。'));
+        break;
+      case 'freehand':
         p.appendChild(lineSection(lineTarget(), applyL));
         break;
       case 'carrow': case 'curve':
@@ -1519,7 +1544,6 @@
           cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
           haloColor: sp.haloColor, haloWidth: sp.haloWidth
         }, applyS));
-        p.appendChild(calloutBgSection());
         break;
       case 'cimage':
         p.appendChild(lineSection(lineTarget(), applyL));
