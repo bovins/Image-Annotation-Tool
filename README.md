@@ -18,7 +18,11 @@
 
 </div>
 
-![工具演示](./docs/preview.svg)
+<div align="center">
+
+![界面截图](./docs/screencut.png)
+
+</div>
 
 ---
 
@@ -70,6 +74,14 @@
 
 > 💡 也支持 **Ctrl+V 粘贴剪贴板图片**、**拖拽图片到画布**、**保存/载入工程 JSON**（Chrome/Edge 保存时会弹出「另存为」对话框）。
 
+<div align="center">
+
+**操作演示**
+
+![操作演示](./docs/demo.gif)
+
+</div>
+
 ## ⌨️ 快捷键
 
 | 按键 | 功能 |
@@ -106,7 +118,9 @@ node test-app-smoke.js    # app.js 冒烟测试（多图标签页 / 历史 / 导
 │   └── app.js            面板、历史记录、导出、工程存取、快捷键、多图标签页
 ├── vendor/
 │   └── fabric.min.js     Fabric.js 5.5.2（本地依赖，离线可用）
-├── docs/preview.svg      README 演示图
+├── docs/
+│   ├── screencut.png     README 界面截图
+│   └── demo.gif          README 操作演示 GIF
 ├── test-*.js             Node 测试套件（4 个）
 └── 使用说明.md            完整使用文档
 ```
