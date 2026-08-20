@@ -729,14 +729,21 @@
 
   /* ---------- 角点缩放比例合并（供含可拖动手柄的类使用） ----------
      对象被角点缩放后 scaleX/Y ≠ 1，而内容坐标（anchor/textPos/points）不带比例；
-     若直接用「冻结包围盒 + relayout」逻辑，松手后整体位置会偏移 (1-s)*ΔoffX。
-     这里把比例写回内容坐标并复位 scale=1，使之后拖动控制点不再跳位。 */
+     若直接用「冻结包围盒 + relayout」逻辑，松手后整体位置会偏移。
+     这里把比例写回内容坐标并复位 scale=1，使之后拖动控制点不再跳位。
+     注意：fabric 拖动 tl/tr/bl/br 角点时会把 left/top 一起改动（围绕对角缩放），
+     因此换算必须保持「当前渲染位置不变」：渲染 = s*p + left - s*offX，
+     所以新坐标 = s*p + (left - s*offX)，否则每次缩放松手后整个标注都会跳。 */
   function bakeContentScale() {
     const sx = this.scaleX, sy = this.scaleY;
     if (Math.abs(sx - 1) < 0.001 && Math.abs(sy - 1) < 0.001) return;
-    const ox = this._offX || this.left || 0, oy = this._offY || this.top || 0;
+    const left = this.left || 0, top = this.top || 0;
+    const ox = this._offX || 0, oy = this._offY || 0;
     const k = (sx + sy) / 2;
-    const sp = p => ({ x: ox + (p.x - ox) * sx, y: oy + (p.y - oy) * sy });
+    const sp = p => ({
+      x: sx * p.x + left - sx * ox,
+      y: sy * p.y + top - sy * oy
+    });
     if (this.anchor) this.anchor = sp(this.anchor);
     if (this.textPos) this.textPos = sp(this.textPos);
     if (Array.isArray(this.anchors)) this.anchors = this.anchors.map(sp);

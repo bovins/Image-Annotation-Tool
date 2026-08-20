@@ -26,8 +26,8 @@ function makeEl(id) {
     toDataURL: () => 'data:image/png;base64,AAA',
     toBlob(cb) { cb(new Blob(['fake-png'])); },
     addEventListener(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
-    removeEventListener() {},
-    dispatchEvent(ev) { (listeners[ev.type] || []).forEach(fn => fn(ev)); },
+    removeEventListener(ev, fn) { const a = listeners[ev]; if (a) { const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } },
+    dispatchEvent(ev) { (listeners[ev.type] || []).slice().forEach(fn => fn(ev)); },
     appendChild(c) { this.children.push(c); return c; },
     insertBefore(c) { this.children.unshift(c); return c; },
     removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; },
@@ -188,7 +188,7 @@ function check(name, cond) {
     const hp = screenOf(obj, getPos(obj));
     CV.setActiveObject(obj);
     CV.upperCanvasEl.dispatchEvent(mk(hp.x, hp.y, 'mousedown'));
-    CV.upperCanvasEl.dispatchEvent(mk(hp.x + dx, hp.y + dy, 'mousemove'));
+    docStub.dispatchEvent(mk(hp.x + dx, hp.y + dy, 'mousemove')); // 拖动期间 fabric 监听 document
     docStub.dispatchEvent(mk(hp.x + dx, hp.y + dy, 'mouseup')); // fabric 把 mouseup 绑在 document
   };
   // 1) 缩放 2x + 平移下拖锚点
@@ -216,6 +216,29 @@ function check(name, cond) {
   const s3 = screenOf(ct1, ct1.anchor);
   check('缩放后拖锚点越界：落点与鼠标一致', Math.abs(s3.x - (s2.x - 45)) < 0.01 && Math.abs(s3.y - (s2.y + 25)) < 0.01);
   CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  // 3) 角点缩放：松手瞬间不得额外跳位（缩放过程本身的移动是正常的，但 mouseup 后的 bake
+  //    必须保持松手前一刻的渲染位置；曾因比例未合并导致每次缩放松手后整体再跳一次）
+  const dragCorner = (corner, dx, dy) => {
+    const c = ct1.oCoords[corner];
+    CV.setActiveObject(ct1);
+    CV.upperCanvasEl.dispatchEvent(mk(c.x, c.y, 'mousedown'));
+    docStub.dispatchEvent(mk(c.x + dx, c.y + dy, 'mousemove'));
+    const during = screenOf(ct1, ct1.anchor); // 松手前锚点的屏幕位置
+    docStub.dispatchEvent(mk(c.x + dx, c.y + dy, 'mouseup'));
+    return during;
+  };
+  let during1 = dragCorner('tl', 60, 40);
+  await tick();
+  const after1 = screenOf(ct1, ct1.anchor);
+  check('角点缩放(左上)松手不跳位', Math.hypot(after1.x - during1.x, after1.y - during1.y) < 1);
+  let during2 = dragCorner('br', -70, -30);
+  await tick();
+  const after2 = screenOf(ct1, ct1.anchor);
+  check('角点缩放(右下)松手不跳位', Math.hypot(after2.x - during2.x, after2.y - during2.y) < 1);
+  let during3 = dragCorner('tl', 40, 30);
+  await tick();
+  const after3 = screenOf(ct1, ct1.anchor);
+  check('再次角点缩放仍不跳位', Math.hypot(after3.x - during3.x, after3.y - during3.y) < 1);
 
   // ---- 3. 打开第二张图 → 多标签切换 ----
   upload();

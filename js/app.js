@@ -1959,6 +1959,12 @@
   let spaceDown = false;
   let panState = null;
   const canvasEl = CV.upperCanvasEl;
+  // 指针捕获：按下即捕获，把控制点拖出画布/窗口后 mousemove/mouseup 仍持续送达画布。
+  // 否则在窗口外松手时 mouseup 会丢失，fabric 的变换悬挂不结束，下一次鼠标移动会
+  // 用巨大的增量继续旧变换，表现为"把控制点拖出画布后标注乱跳"。
+  canvasEl.addEventListener('pointerdown', e => {
+    try { canvasEl.setPointerCapture(e.pointerId); } catch (err) { /* 旧浏览器不支持时忽略 */ }
+  });
   canvasEl.addEventListener('mousedown', e => {
     if (e.button === 1 || (e.button === 0 && spaceDown)) {
       e.preventDefault();
