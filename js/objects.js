@@ -478,8 +478,11 @@
           t.__lx = t.ex != null ? t.ex : x;
           t.__ly = t.ey != null ? t.ey : y;
         }
-        const vt = obj.canvas.viewportTransform || [1, 0, 0, 1, 0, 0];
-        const inv = F.util.invertTransform(F.util.multiplyTransformMatrices(vt, obj.calcTransformMatrix()));
+        // fabric 5.5.2 传入 actionHandler 的 x/y 是画布逻辑坐标（getPointer 默认已做
+        // restorePointerVpt 逆视口变换），因此这里只需反变换对象矩阵。
+        // 若再乘 viewportTransform 会重复除以缩放：缩放≠1 时控制点以 1/缩放 速度跟手，
+        // 松开鼠标后标注位置与实际落点偏差（表现为"整个标注乱跑"）。
+        const inv = F.util.invertTransform(obj.calcTransformMatrix());
         const p1 = F.util.transformPoint({ x: x, y: y }, inv);
         const p0 = F.util.transformPoint({ x: t.__lx, y: t.__ly }, inv);
         t.__lx = x; t.__ly = y;
@@ -723,6 +726,35 @@
       });
     }
   });
+
+  /* ---------- 角点缩放比例合并（供含可拖动手柄的类使用） ----------
+     对象被角点缩放后 scaleX/Y ≠ 1，而内容坐标（anchor/textPos/points）不带比例；
+     若直接用「冻结包围盒 + relayout」逻辑，松手后整体位置会偏移 (1-s)*ΔoffX。
+     这里把比例写回内容坐标并复位 scale=1，使之后拖动控制点不再跳位。 */
+  function bakeContentScale() {
+    const sx = this.scaleX, sy = this.scaleY;
+    if (Math.abs(sx - 1) < 0.001 && Math.abs(sy - 1) < 0.001) return;
+    const ox = this._offX || this.left || 0, oy = this._offY || this.top || 0;
+    const k = (sx + sy) / 2;
+    const sp = p => ({ x: ox + (p.x - ox) * sx, y: oy + (p.y - oy) * sy });
+    if (this.anchor) this.anchor = sp(this.anchor);
+    if (this.textPos) this.textPos = sp(this.textPos);
+    if (Array.isArray(this.anchors)) this.anchors = this.anchors.map(sp);
+    if (Array.isArray(this.points)) this.points = this.points.map(sp);
+    if (this.tx && this.tx.fontSize) this.tx.fontSize = Math.max(6, Math.round(this.tx.fontSize * k));
+    if (this.arrowLen) this.arrowLen = Math.max(4, this.arrowLen * k);
+    if (this.arrowHalf) this.arrowHalf = Math.max(2, this.arrowHalf * k);
+    this.set({ scaleX: 1, scaleY: 1 });
+    if (typeof this.relayout === 'function') {
+      this.relayout();
+      this.set({ left: this._offX || this.left, top: this._offY || this.top });
+      this.setCoords();
+    }
+    this.set('dirty', true);
+  }
+  F.CalloutText.prototype.bakeScale = bakeContentScale;
+  F.MultiCallout.prototype.bakeScale = bakeContentScale;
+  F.SplinePath.prototype.bakeScale = bakeContentScale;
 
   /* ================= 引出区域 ================= */
   F.CalloutRegion = F.util.createClass(F.Object, {

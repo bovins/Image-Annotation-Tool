@@ -36,7 +36,7 @@ function makeEl(id) {
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     querySelector: () => null,
     querySelectorAll: () => [],
-    click() {}, focus() {}, blur() {}, setPointerCapture() {}, releasePointerCapture() {},
+    click() {}, focus() {}, blur() {}, select() {}, setPointerCapture() {}, releasePointerCapture() {},
     remove() {}
   };
   Object.defineProperty(el, 'innerHTML', {
@@ -71,12 +71,16 @@ global.localStorage = (() => {
 })();
 
 const els = {};
+// 记录 document 上的监听器（fabric 拖动时把 mouseup 绑在 document 上），供拖动模拟使用
+const docListeners = {};
 const docStub = {
   createElement: (tag) => makeEl(tag),
   createElementNS: () => makeEl('svg'),
   getElementById: (id) => els[id] || (els[id] = makeEl(id)),
   querySelectorAll: () => [],
-  addEventListener() {}, removeEventListener() {},
+  addEventListener(ev, fn) { (docListeners[ev] = docListeners[ev] || []).push(fn); },
+  removeEventListener(ev, fn) { const a = docListeners[ev]; if (a) { const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } },
+  dispatchEvent(ev) { (docListeners[ev.type] || []).slice().forEach(fn => fn(ev)); },
   body: makeEl('body'),
   defaultView: global,
   documentElement: { style: {} },
@@ -172,6 +176,46 @@ function check(name, cond) {
   await tick();
   const lines = () => CV.getObjects().filter(o => o.type === 'annoLine');
   check('新直线使用全局线条颜色', lines().length === 1 && lines()[0].line.color === '#00ff00');
+
+  // ---- 控制点拖动回归：缩放≠1 时松手位置必须与鼠标落点一致（曾重复逆视口变换导致半速跟手/整体乱跑） ----
+  const mk = (cx, cy, type) => ({ clientX: cx, clientY: cy, button: 0, type, preventDefault() {}, stopPropagation() {} });
+  const screenOf = (o, pt) => {
+    const vt = CV.viewportTransform;
+    const full = fabric.util.multiplyTransformMatrices(vt, o.calcTransformMatrix());
+    return fabric.util.transformPoint(o.pointToLocal(pt), full);
+  };
+  const simDrag = (obj, getPos, dx, dy) => {
+    const hp = screenOf(obj, getPos(obj));
+    CV.setActiveObject(obj);
+    CV.upperCanvasEl.dispatchEvent(mk(hp.x, hp.y, 'mousedown'));
+    CV.upperCanvasEl.dispatchEvent(mk(hp.x + dx, hp.y + dy, 'mousemove'));
+    docStub.dispatchEvent(mk(hp.x + dx, hp.y + dy, 'mouseup')); // fabric 把 mouseup 绑在 document
+  };
+  // 1) 缩放 2x + 平移下拖锚点
+  M.select('ctext');
+  M.onDown({ e: { clientX: 60, clientY: 250, button: 0 } });
+  M.onMove({ e: { clientX: 200, clientY: 230, button: 0 } });
+  M.onUp({ e: { clientX: 200, clientY: 230, button: 0 } });
+  await tick();
+  const ct1 = CV.getObjects().find(o => o.type === 'calloutText');
+  CV.setViewportTransform([2, 0, 0, 2, 80, 30]);
+  const s0 = screenOf(ct1, ct1.anchor);
+  simDrag(ct1, o => o.anchor, 50, 30);
+  await tick();
+  const s1 = screenOf(ct1, ct1.anchor);
+  check('缩放2x拖锚点：落点与鼠标一致', Math.abs(s1.x - (s0.x + 50)) < 0.01 && Math.abs(s1.y - (s0.y + 30)) < 0.01);
+  // 2) 角点缩放 1.5x（bake 后 scale=1）再拖锚点越出包围盒
+  ct1.set({ scaleX: 1.5, scaleY: 1.5 });
+  CV.fire('object:modified', { target: ct1 });
+  await tick();
+  check('角点缩放被合并进内容（scale=1）', Math.abs(ct1.scaleX - 1) < 0.001);
+  CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  const s2 = screenOf(ct1, ct1.anchor);
+  simDrag(ct1, o => o.anchor, -45, 25);
+  await tick();
+  const s3 = screenOf(ct1, ct1.anchor);
+  check('缩放后拖锚点越界：落点与鼠标一致', Math.abs(s3.x - (s2.x - 45)) < 0.01 && Math.abs(s3.y - (s2.y + 25)) < 0.01);
+  CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
 
   // ---- 3. 打开第二张图 → 多标签切换 ----
   upload();

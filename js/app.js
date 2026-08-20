@@ -1666,6 +1666,8 @@
         if (CV._activeObject === o) renderPanel();
       }
     }
+    // 引出类/曲线类对象：角点缩放后把比例合并进内容坐标（否则拖动控制点松手后整体偏移）
+    if (o && typeof o.bakeScale === 'function') o.bakeScale();
     if (!APP.batch) pushHistory();
     markSnap();
   });
