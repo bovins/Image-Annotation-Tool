@@ -1444,7 +1444,7 @@
     const tp = APP.textProps, sp = APP.shapeProps, lp = APP.lineProps;
     const applyT = (k, v) => { tp[k] = v; saveUserData(); };
     const applyS = (k, v) => { sp[k] = v; saveUserData(); };
-    const applyL = (k, v) => { lp[k] = v; saveUserData(); };
+    const applyL = (k, v) => { lp[k === 'color' ? 'stroke' : k] = v; saveUserData(); };
     const lineTarget = () => ({ color: lp.stroke, width: lp.width, dash: lp.dash, haloColor: lp.haloColor, haloWidth: lp.haloWidth });
     switch (id) {
       case 'text':
@@ -1920,7 +1920,9 @@
     const save = () => saveUserData();
     const applyT = (k, v) => { tp[k] = v; save(); };
     const applyS = (k, v) => { sp[k] = v; save(); };
-    const applyL = (k, v) => { lp[k] = v; save(); };
+    // lineSection 的颜色字段使用键 'color'，而全局线条颜色存储在 lineProps.stroke 上
+    // （对象上才是 line.color），这里统一映射，否则改颜色不生效
+    const applyL = (k, v) => { lp[k === 'color' ? 'stroke' : k] = v; save(); };
     box.appendChild(lineSection({
       color: lp.stroke, width: lp.width, dash: lp.dash,
       haloColor: lp.haloColor, haloWidth: lp.haloWidth

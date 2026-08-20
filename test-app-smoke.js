@@ -117,6 +117,25 @@ function check(name, cond) {
   check('启动后无标签页', APP.tabs.length === 0);
   check('tabbar 渲染出「＋ 新图」', els.tabbar && els.tabbar.children.length >= 1);
 
+  // ---- 全局样式：线条颜色修改应写入 lineProps.stroke（回归：曾写入无效的 lp.color） ----
+  let lineSec = null;
+  (function walk(e) {
+    if (!e) return;
+    if (e.className === 'sec' && e.children[0] && e.children[0].textContent === '线条样式') lineSec = e;
+    (e.children || []).forEach(walk);
+  })(els.globalStyleBox);
+  let lineColorInput = null;
+  (function collect(e) {
+    if (!e) return;
+    if (e.type === 'color') lineColorInput = lineColorInput || e;
+    (e.children || []).forEach(collect);
+  })(lineSec);
+  if (lineColorInput) {
+    lineColorInput.value = '#00ff00';
+    lineColorInput.dispatchEvent({ type: 'input' });
+  }
+  check('全局线条颜色写入 lineProps.stroke', lineColorInput && APP.lineProps.stroke === '#00ff00');
+
   const tick = () => new Promise(r => setTimeout(r, 20));
   const upload = () => els.fileInput.dispatchEvent({
     type: 'change', target: { files: [{ type: 'image/png', name: 'a.png' }], value: '' }
@@ -126,6 +145,12 @@ function check(name, cond) {
     M.onDown({ e: { clientX: 50, clientY: 60, button: 0 } });
     M.onMove({ e: { clientX: 180, clientY: 140, button: 0 } });
     M.onUp({ e: { clientX: 180, clientY: 140, button: 0 } });
+  };
+  const drawLine = () => {
+    M.select('line');
+    M.onDown({ e: { clientX: 40, clientY: 200, button: 0 } });
+    M.onMove({ e: { clientX: 160, clientY: 240, button: 0 } });
+    M.onUp({ e: { clientX: 160, clientY: 240, button: 0 } });
   };
 
   // ---- 1. 上传第一张图 → 打开标签页 ----
@@ -141,6 +166,12 @@ function check(name, cond) {
   const rects = () => CV.getObjects().filter(o => o.type === 'annoRect');
   check('矩形标注已添加', rects().length === 1);
   check('标注自动建层', APP.layers.length >= 2 && APP.layers.some(l => l.name && l.name.indexOf('标注') === 0));
+
+  // 全局线条颜色已改为 #00ff00 → 新画的直线应使用新颜色
+  drawLine();
+  await tick();
+  const lines = () => CV.getObjects().filter(o => o.type === 'annoLine');
+  check('新直线使用全局线条颜色', lines().length === 1 && lines()[0].line.color === '#00ff00');
 
   // ---- 3. 打开第二张图 → 多标签切换 ----
   upload();
