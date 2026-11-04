@@ -6,7 +6,7 @@
   dialog.innerHTML = '<h2 id="exportTitle">导出预览</h2><div class="export-layout"><div class="export-controls"></div><div class="export-preview"></div></div><p class="export-info" role="status"></p><p class="fnote">请检查最终字号和线宽是否可读。提高导出倍率会放大现有像素，不能恢复原图细节。放大镜不参与导出。</p><div class="export-actions"></div>';
   document.body.append(dialog);
   const controls = dialog.querySelector('.export-controls'), preview = dialog.querySelector('.export-preview'), info = dialog.querySelector('.export-info'), actions = dialog.querySelector('.export-actions');
-  let canvas = null, timer = null, owner = null, busy = false, generation = 0, format = 'png';
+  let canvas = null, timer = null, owner = null, busy = false, previewValid = false, generation = 0, format = 'png';
   function select(id, label, values, initial) {
     const l = document.createElement('label'); l.textContent = label;
     const s = document.createElement('select'); s.id = id;
@@ -25,9 +25,10 @@
       background: fields.background.value, backgroundColor: fields.color.value,
       crop: { x: Number(fields.x.value), y: Number(fields.y.value), w: Number(fields.w.value), h: Number(fields.h.value) } };
   }
-  function schedule() { clearTimeout(timer); exportButton.disabled = batchButton.disabled = true; timer = setTimeout(update, 180); }
+  function schedule() { clearTimeout(timer); previewValid = false; exportButton.disabled = batchButton.disabled = true; timer = setTimeout(update, 180); }
   async function update() {
     const token = ++generation;
+    previewValid = false; exportButton.disabled = batchButton.disabled = true;
     try {
       await Promise.all(C.getObjects().map(o => o._ready).filter(Boolean));
       if (token !== generation || !dialog.open) return;
@@ -38,7 +39,7 @@
       const m = canvas.exportInfo;
       canvas.setAttribute('aria-label', '实际导出预览 ' + m.width + '×' + m.height);
       info.textContent = m.width + ' × ' + m.height + ' px · 实际倍率 ' + m.scale.toFixed(3) + '× · 范围 ' + m.range + ' (' + m.left + ', ' + m.top + ', ' + m.w + ', ' + m.h + ') · 背景 ' + (m.background || '透明') + ' · ' + format.toUpperCase() + (format === 'jpg' ? ' 质量 ' + Math.round(m.quality * 100) + '%' : '') + (m.limited ? '。超过安全限额，已等比限制至最大边 8192 / 总像素 3200 万。' : '');
-      exportButton.disabled = batchButton.disabled = false;
+      previewValid = true; exportButton.disabled = batchButton.disabled = busy;
       A.exportOpts = Object.assign(A.exportOpts, options()); A.savePreferences();
     } catch (err) { info.textContent = '无法预览：' + err.message; exportButton.disabled = batchButton.disabled = true; }
   }
@@ -49,17 +50,21 @@
     });
   }
   async function downloadCurrent() {
-    if (!canvas || busy) return;
+    if (!canvas || busy || !previewValid) return;
     busy = true; exportButton.disabled = batchButton.disabled = true;
+    const output = canvas, kind = output.exportInfo.format, filename = ImageResources.stem(owner.name) + '.' + kind;
     try {
-      const file = await blob(canvas, format, canvas.exportInfo.quality);
-      A.downloadBlob(file, ImageResources.stem(owner.name) + '.' + format);
+      const file = await blob(output, kind, output.exportInfo.quality);
+      A.downloadBlob(file, filename);
       A.toast('图片已导出；工程修改状态保持不变');
     } catch (err) { A.toast('导出失败：' + err.message); }
-    finally { busy = false; exportButton.disabled = batchButton.disabled = false; }
+    finally {
+      busy = false; exportButton.disabled = batchButton.disabled = !previewValid || !dialog.open;
+      if (!dialog.open && canvas) { canvas.width = canvas.height = 1; canvas = null; }
+    }
   }
   async function exportAll() {
-    if (busy) return;
+    if (busy || !canvas || !previewValid) return;
     busy = true; exportButton.disabled = batchButton.disabled = true;
     const active = A.activeTabIndex, tabs = A.tabs.slice(), opts = options(), names = new Set();
     // Close the modal and block editing while the single reusable export pipeline
@@ -83,7 +88,7 @@
   }
   const exportButton = button('导出当前图片', downloadCurrent), batchButton = button('批量导出全部标签页', exportAll);
   button('取消', () => dialog.close());
-  dialog.addEventListener('close', () => { generation++; clearTimeout(timer); if (canvas && !busy) { canvas.width = canvas.height = 1; canvas = null; } });
+  dialog.addEventListener('close', () => { generation++; previewValid = false; clearTimeout(timer); if (canvas && !busy) { canvas.width = canvas.height = 1; canvas = null; } });
   function open(kind) {
     if (!C._baseImage || A.restoring || busy) { A.toast('请先上传图片并等待载入'); return; }
     owner = A.tabs[A.activeTabIndex]; format = kind === 'jpg' ? 'jpg' : 'png';

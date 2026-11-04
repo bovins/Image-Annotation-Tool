@@ -43,7 +43,7 @@
     // 标注统一阴影：避免与图片颜色融合导致看不清（可在面板关闭）
     annoShadow: new F.Shadow({ color: 'rgba(0,0,0,0.4)', blur: 3, offsetX: 1.5, offsetY: 1.5 }),
     annoShadowOn: true,
-    layers: [{ id: 'L1', name: '图层 1', visible: true, locked: false, active: true }],
+    layers: [{ id: 'L1', name: '图层 1', visible: true, locked: false, active: true, automatic: false }],
     getActiveLayer() {
       return this.layers.find(l => l.active) || this.layers[0];
     },
@@ -52,7 +52,7 @@
       const l = {
         id: layerUid(),
         name: '标注 ' + (++this.annotCounter),
-        visible: true, locked: false, active: true
+        visible: true, locked: false, active: true, automatic: true
       };
       this.layers.forEach(layer => { layer.active = false; });
       this.layers.unshift(l);
@@ -130,7 +130,7 @@
   }
   function serializeLayers() {
     return APP.layers.map(l => ({
-      id: l.id, name: l.name, visible: l.visible, locked: l.locked, active: l.active, group: l.group || ''
+      id: l.id, name: l.name, visible: l.visible, locked: l.locked, active: l.active, group: l.group || '', automatic: l.automatic === true
     }));
   }
   function makeEntry() {
@@ -176,7 +176,7 @@
   }
   function stateKey(json, layers, scale, name, mosaic) {
     return JSON.stringify({ json, layers: layers.map(l => ({ id: l.id, name: l.name,
-      visible: l.visible, locked: l.locked, group: l.group || '' })), scale, name, mosaic: mosaic || null });
+      visible: l.visible, locked: l.locked, group: l.group || '', automatic: l.automatic === true })), scale, name, mosaic: mosaic || null });
   }
   function currentKey() {
     const tab = APP.tabs[APP.activeTabIndex], last = hist.undo[hist.undo.length - 1];
@@ -259,7 +259,7 @@
       afterRestore(base);
       // 恢复图层列表并应用（图层操作可撤销）
       APP.layers = (entry.layers || []).map(l => ({
-        id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active, group: l.group || ''
+        id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active, group: l.group || '', automatic: l.automatic === true
       }));
       if (!APP.layers.some(l => l.active) && APP.layers[0]) APP.layers[0].active = true;
       reconcileLayers();
@@ -405,12 +405,20 @@
     renderLayers();
     renderPanel();
   }
+  function retainEditableSelection() {
+    const selected = CV.getActiveObjects().slice();
+    if (!selected.length) return;
+    CV.discardActiveObject();
+    const present = new Set(CV.getObjects());
+    const editable = selected.filter(o => present.has(o) && o.visible !== false && o.selectable !== false);
+    if (editable.length) CV.setActiveObject(editable.length === 1 ? editable[0] : new F.ActiveSelection(editable, { canvas: CV }));
+  }
   function addLayer() {
     flushHistory();
     const l = {
       id: layerUid(),
       name: '图层 ' + (APP.layers.length + 1),
-      visible: true, locked: false, active: false
+      visible: true, locked: false, active: false, automatic: false
     };
     APP.layers.push(l);
     setActiveLayer(l.id);
@@ -425,7 +433,8 @@
     APP.batch--;
     APP.layers = APP.layers.filter(l => l.id !== id);
     if (!APP.layers.some(l => l.active)) APP.layers[0].active = true;
-    if (CV._activeObject && CV._activeObject.layerId === id) CV.discardActiveObject();
+    selectedLayers.delete(id);
+    retainEditableSelection();
     pushHistory();
     renderLayers();
     renderPanel();
@@ -438,6 +447,8 @@
     if (!l) return;
     l.visible = !l.visible;
     CV.getObjects().forEach(o => { if (o.layerId === id) o.set('visible', l.visible); });
+    retainEditableSelection();
+    renderPanel();
     CV.requestRenderAll();
     renderLayers();
     markSnap();
@@ -455,10 +466,8 @@
         o.set('dirty', true);
       }
     });
-    if (l.locked && CV._activeObject && CV._activeObject.layerId === id) {
-      CV.discardActiveObject();
-      renderPanel();
-    }
+    retainEditableSelection();
+    renderPanel();
     CV.requestRenderAll();
     renderLayers();
     pushHistory();
@@ -562,7 +571,7 @@
     return importQueue;
   }
   function defaultLayers() {
-    return [{ id: 'L1', name: '图层 1', visible: true, locked: false, active: true }];
+    return [{ id: 'L1', name: '图层 1', visible: true, locked: false, active: true, automatic: false }];
   }
   function emptyObjectsJSON() {
     return JSON.stringify({ version: fabric.version, objects: [] });
@@ -624,7 +633,7 @@
     const tab = APP.tabs[i];
     const token = ++APP.restoreToken;
     APP.layers = tab.layers.map(l => ({
-      id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active, group: l.group || ''
+      id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active, group: l.group || '', automatic: l.automatic === true
     }));
     hist.undo = tab.hist.undo.slice();
     hist.redo = tab.hist.redo.slice();
@@ -1033,7 +1042,7 @@
   /* ---------- 选中对象操作 ---------- */
   function pruneLayers() {
     const ids = new Set(CV.getObjects().filter(o => !isPinned(o)).map(o => o.layerId));
-    APP.layers = APP.layers.filter(l => ids.has(l.id) || !/^标注 \d+$/.test(l.name));
+    APP.layers = APP.layers.filter(l => ids.has(l.id) || l.automatic !== true);
     if (!APP.layers.length) APP.layers = defaultLayers();
     if (!APP.layers.some(l => l.active)) APP.layers[0].active = true;
     renderLayers();

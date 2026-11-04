@@ -173,6 +173,7 @@
     },
     addTemp(o) {
       o._temp = true;
+      o.excludeFromExport = true;
       o.selectable = false;
       o.evented = false;
       if (window.APP && window.APP.annoShadow && window.APP.annoShadowOn !== false) {
@@ -183,6 +184,7 @@
     },
     promote(o) {
       o._temp = false;
+      o.excludeFromExport = false;
       o.selectable = true;
       o.evented = true;
       if (!o.layerId && window.APP && window.APP.assignAnnotationLayer) {

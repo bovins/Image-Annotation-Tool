@@ -81,6 +81,7 @@
       const ids = new Set();
       (data.layers || []).forEach(l => {
         if (!l || typeof l.id !== 'string' || !l.id || ids.has(l.id) || typeof l.name !== 'string') throw new Error('图层名称或 ID 无效/重复');
+        if (l.automatic != null && typeof l.automatic !== 'boolean') throw new Error('图层来源标记无效');
         ids.add(l.id);
       });
       const baseImage = await resource(data.base.src, '底图');

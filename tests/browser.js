@@ -542,6 +542,70 @@ const assert = require('assert/strict');
     assert.deepEqual(names, ['part_.png', 'part_ (2).png']); assert.equal(await scratch.evaluate(() => APP.activeTabIndex), 1);
     await context.close();
   });
+  await test('manual layer names never determine automatic cleanup ownership', async () => {
+    assert.deepEqual(await page.evaluate(() => {
+      document.getElementById('btnAddLayer').click();
+      const manual = APP.getActiveLayer(); manual.name = '标注 7';
+      const o = new fabric.AnnoRect({ rect: { x: 40, y: 40, w: 60, h: 40 } }); CV.add(o);
+      const automatic = APP.layers.find(l => l.id === o.layerId); automatic.name = 'Renamed annotation';
+      CV.setActiveObject(o); APP.deleteSelection();
+      return [APP.layers.some(l => l.id === manual.id), !APP.layers.some(l => l.id === automatic.id)];
+    }), [true, true]);
+  });
+  await test('individual layer lock/hide/delete removes affected members from multi-selection', async () => {
+    const result = await page.evaluate(() => {
+      TOOLMGR.select('select');
+      const a = new fabric.Rect({ left: 50, top: 50, width: 50, height: 40 });
+      const b = new fabric.Rect({ left: 150, top: 50, width: 50, height: 40 }); CV.add(a, b);
+      const row = id => document.querySelector('[data-id="' + id + '"]');
+      const select = () => { row(a.layerId).click(); row(b.layerId).dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })); };
+      const worldCenter = () => fabric.util.transformPoint({ x: 0, y: 0 }, a.calcTransformMatrix());
+      select(); const before = worldCenter(); row(a.layerId).querySelectorAll('.layer-btn')[1].click();
+      const lockedExcluded = !CV.getActiveObjects().includes(a) && CV.getActiveObjects().includes(b);
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      const after = worldCenter();
+      row(a.layerId).querySelectorAll('.layer-btn')[1].click(); select(); row(a.layerId).querySelectorAll('.layer-btn')[0].click();
+      const hiddenExcluded = !CV.getActiveObjects().includes(a) && CV.getActiveObjects().includes(b);
+      row(a.layerId).querySelectorAll('.layer-btn')[0].click(); select(); row(a.layerId).querySelector('.danger').click();
+      const deletedExcluded = !CV.getActiveObjects().includes(a) && CV.getActiveObjects().includes(b);
+      return [lockedExcluded, before.x === after.x && before.y === after.y, hiddenExcluded, deletedExcluded];
+    });
+    assert.deepEqual(result, [true, true, true, true]);
+  });
+  await test('unfinished drawing previews never enter project or history snapshots', async () => {
+    const result = await page.evaluate(() => {
+      TOOLMGR.select('select'); const before = APP.workspaceProject().tabs[APP.activeTabIndex].objects.objects.length;
+      TOOLMGR.select('area'); TOOLMGR.onAreaDown({ x: 20, y: 20 }); TOOLMGR.onAreaDown({ x: 80, y: 20 });
+      const previews = TOOLMGR.temp.length;
+      const fileCount = APP.workspaceProject().tabs[APP.activeTabIndex].objects.objects.length;
+      APP.pushHistory(); const historyCount = JSON.parse(APP.__hist.undo[APP.__hist.undo.length - 1].objs).objects.length;
+      TOOLMGR.select('select'); return { previews, fileDelta: fileCount - before, historyDelta: historyCount - before };
+    });
+    assert.ok(result.previews > 0); assert.equal(result.fileDelta, 0); assert.equal(result.historyDelta, 0);
+  });
+  await test('async encoding keeps its requested format when preview format changes', async () => {
+    await page.evaluate(() => {
+      APP.exportOpts = { range: 'custom', crop: { x: 0, y: 0, w: 30, h: 20 }, scale: 1 };
+      window._originalToBlob = HTMLCanvasElement.prototype.toBlob;
+      HTMLCanvasElement.prototype.toBlob = function (callback, ...args) { window._originalToBlob.call(this, blob => setTimeout(() => callback(blob), 800), ...args); };
+      ExportUI.open('png');
+    });
+    try {
+      await page.waitForFunction(() => document.querySelector('.export-preview canvas'));
+      const download = page.waitForEvent('download');
+      await page.getByRole('button', { name: '导出当前图片', exact: true }).click();
+      await page.locator('#exportFormat').selectOption('jpg');
+      await page.waitForFunction(() => document.querySelector('.export-preview canvas').exportInfo.format === 'jpg');
+      await page.locator('#exportScale').fill('0');
+      const file = await download, stream = await file.createReadStream(), chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      assert.equal(Buffer.concat(chunks).subarray(0, 4).toString('hex'), '89504e47');
+      assert.ok(file.suggestedFilename().endsWith('.png'), file.suggestedFilename());
+      assert.equal(await page.getByRole('button', { name: '导出当前图片', exact: true }).isDisabled(), true);
+    } finally {
+      await page.evaluate(() => { HTMLCanvasElement.prototype.toBlob = window._originalToBlob; document.querySelector('.export-dialog').close(); });
+    }
+  });
   await test('no browser exceptions', () => assert.deepEqual(errors, []));
   await browser.close();
   process.exitCode = failures.length ? 1 : 0;
