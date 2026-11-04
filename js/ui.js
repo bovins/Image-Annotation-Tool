@@ -41,7 +41,7 @@
   });
   align.onchange = () => { if (align.value) A.alignSelection(align.value); align.value = ''; };
   quick.append(align);
-  document.querySelector('.stage-main').insertBefore(quick, document.getElementById('canvasWrap'));
+  document.getElementById('canvasWrap').append(quick);
   function refresh() {
     const objects = C.getActiveObjects(), o = objects[0];
     quick.hidden = !o;
@@ -52,7 +52,6 @@
       width.value = o.line && o.line.width || o.shape && o.shape.strokeWidth || o.strokeWidth || 1;
       align.disabled = objects.length < 2;
     }
-    window.dispatchEvent(new Event('resize'));
   }
   C.on('selection:created', refresh); C.on('selection:updated', refresh); C.on('selection:cleared', refresh);
   const help = document.createElement('dialog'); help.className = 'help-dialog';

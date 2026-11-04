@@ -52,6 +52,41 @@ const assert = require('assert/strict');
   await test('measurement transformed length and unit at scale 1', async () => {
     assert.equal(await page.evaluate(() => new fabric.Dimension({ p1: { x: 0, y: 0 }, p2: { x: 10, y: 0 }, scale: 1, unit: 'mm', scaleX: 2, scaleY: 2 }).label()), '20.00 mm');
   });
+  await test('selection toolbar never shifts/resizes canvas or its world-to-screen coordinates', async () => {
+    const result = await page.evaluate(() => {
+      CV.discardActiveObject();
+      const o = new fabric.Rect({ width: 100, height: 60, left: 120, top: 100 }); CV.add(o);
+      CV.setViewportTransform([1.3, 0, 0, 1.3, 30, -20]);
+      function snapshot() {
+        const rect = CV.upperCanvasEl.getBoundingClientRect();
+        const p = fabric.util.transformPoint(o.getCenterPoint(), CV.viewportTransform);
+        return { left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+          backing: [CV.lowerCanvasEl.width, CV.lowerCanvasEl.height], viewport: CV.viewportTransform.slice(),
+          point: [rect.left + p.x, rect.top + p.y] };
+      }
+      const before = snapshot(); CV.setActiveObject(o); const selected = snapshot();
+      const visible = !document.querySelector('.quick-tools').hidden;
+      CV.discardActiveObject(); const cleared = snapshot();
+      return { before, selected, cleared, visible };
+    });
+    assert.equal(result.visible, true);
+    assert.deepEqual(result.selected, result.before);
+    assert.deepEqual(result.cleared, result.before);
+    for (const width of [1093, 640]) {
+      await page.setViewportSize({ width, height: 768 });
+      const layout = await page.evaluate(() => {
+        const wrap = document.getElementById('canvasWrap'), o = CV.getObjects().find(o => o.type === 'rect');
+        const before = [wrap.offsetTop, CV.width, CV.height]; CV.setActiveObject(o);
+        const bar = document.querySelector('.quick-tools'), b = bar.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+        const selected = [wrap.offsetTop, CV.width, CV.height];
+        CV.discardActiveObject();
+        return { before, selected, cleared: [wrap.offsetTop, CV.width, CV.height], contained: b.left >= w.left && b.right <= w.right };
+      });
+      assert.equal(layout.contained, true);
+      assert.deepEqual(layout.selected, layout.before); assert.deepEqual(layout.cleared, layout.before);
+    }
+    await page.setViewportSize({ width: 1366, height: 768 });
+  });
   await test('quick undo/redo flushes pending edits and cancels stale timer', async () => {
     await page.evaluate(() => {
       const o = new fabric.AnnoText({ textContent: 'before', left: 80, top: 60 }); CV.add(o);
