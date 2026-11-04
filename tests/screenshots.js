@@ -1,0 +1,46 @@
+'use strict';
+const { chromium } = require('playwright');
+const { pathToFileURL } = require('url');
+const path = require('path');
+(async () => {
+  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
+  await page.goto(pathToFileURL(path.resolve('index.html')).href);
+  await page.waitForFunction(() => window.ExportUI && window.APP);
+  await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 1000; c.height = 700;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = '#334155'; ctx.font = 'bold 30px Arial'; ctx.fillText('LINEAR ACTUATOR / TEST ASSEMBLY', 60, 70);
+    ctx.fillStyle = '#64748b'; ctx.font = '20px Arial'; ctx.fillText('Schematic fixture · working image 1000 × 700 px', 60, 108);
+    ctx.strokeStyle = '#475569'; ctx.lineWidth = 4;
+    ctx.fillStyle = '#e2e8f0'; ctx.fillRect(210, 260, 430, 160); ctx.strokeRect(210, 260, 430, 160);
+    ctx.fillStyle = '#94a3b8'; ctx.fillRect(610, 305, 200, 70); ctx.strokeRect(610, 305, 200, 70);
+    ctx.fillStyle = '#cbd5e1'; ctx.fillRect(190, 240, 35, 200); ctx.strokeRect(190, 240, 35, 200);
+    ctx.fillStyle = '#94a3b8'; ctx.fillRect(250, 420, 60, 60); ctx.strokeRect(250, 420, 60, 60);
+    ctx.fillRect(540, 420, 60, 60); ctx.strokeRect(540, 420, 60, 60);
+    ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.setLineDash([8, 8]); ctx.beginPath(); ctx.moveTo(120, 340); ctx.lineTo(870, 340); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#334155'; ctx.font = '18px Arial'; ctx.fillText('A — Housing', 225, 550); ctx.fillText('B — Piston rod', 625, 550);
+    const blob = await new Promise(r => c.toBlob(r)); await APP.loadImageFiles([new File([blob], '试验装置.png', { type: 'image/png' })]);
+    APP.annoShadowOn = false; APP.setMeasurementScale(5, 'mm');
+    const dimension = new fabric.Dimension({ p1: { x: 210, y: 260 }, p2: { x: 640, y: 260 }, offset: -70, scale: 5, unit: 'mm', line: { color: '#334155', width: 2, haloWidth: 0 }, tx: { fill: '#334155', fontSize: 24 } });
+    // A positive offset is used below the housing, keeping the measured endpoints explicit.
+    dimension.offset = 220; dimension.relayout(); dimension.set({ left: dimension._offX, top: dimension._offY }); CV.add(dimension);
+    const arrow = new fabric.AnnoLine({ pts: [{ x: 850, y: 205 }, { x: 770, y: 300 }], arrowhead: 'end', line: { color: '#ef4444', width: 4, haloWidth: 1 } });
+    arrow.set({ left: arrow._offX, top: arrow._offY }); CV.add(arrow);
+    CV.add(new fabric.AnnoText({ textContent: '检查密封与行程', left: 660, top: 155, tx: { fill: '#ef4444', fontSize: 28, fontWeight: 'bold' } }));
+    CV.add(new fabric.StepNumber({ left: 180, top: 220, number: 1, radius: 20, tx: { fill: '#ef4444' } }));
+    TOOLMGR.select('select'); CV.discardActiveObject();
+    document.getElementById('btnFit').click();
+    APP.renderPanel(); APP.pushHistory(); APP.updateDirty();
+    document.querySelector('.tool-category').open = true;
+  });
+  await page.waitForTimeout(350);
+  console.log(await page.evaluate(() => ({ scale: APP.scale, restoring: APP.restoring, history: APP.__hist.undo.length, layers: APP.layers.length })));
+  await page.screenshot({ path: 'docs/editor-current.png' });
+  await page.locator('#btnTheme').click(); await page.waitForTimeout(250);
+  await page.screenshot({ path: 'test-results/editor-light.png' });
+  await page.locator('#btnExport').click(); await page.waitForFunction(() => document.querySelector('.export-preview canvas'));
+  await page.screenshot({ path: 'docs/export-preview.png' });
+  console.log('Screenshots: Edge ' + browser.version() + ', 1366x768, file://');
+  await browser.close();
+})().catch(error => { console.error(error); process.exitCode = 1; });

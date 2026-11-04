@@ -10,6 +10,7 @@ Thumbs.db
 .idea/
 .vscode/
 
-# 临时目录
+# 临时目录和开发产物
 .npmcache/
 node_modules/
+test-results/

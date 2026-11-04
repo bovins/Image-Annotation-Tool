@@ -1,6 +1,7 @@
 /* app.js — 应用主逻辑：画布初始化 / 属性面板 / 历史记录 / 导出 / 工程存取 */
 (function () {
   const F = fabric;
+  F.Object.NUM_FRACTION_DIGITS = 6;
 
   /* ---------- 默认属性 ---------- */
   function deepCopy(o) {
@@ -40,7 +41,7 @@
     tabs: [],
     activeTabIndex: -1,
     // 标注统一阴影：避免与图片颜色融合导致看不清（可在面板关闭）
-    annoShadow: { color: 'rgba(0,0,0,0.4)', blur: 3, offsetX: 1.5, offsetY: 1.5 },
+    annoShadow: new F.Shadow({ color: 'rgba(0,0,0,0.4)', blur: 3, offsetX: 1.5, offsetY: 1.5 }),
     annoShadowOn: true,
     layers: [{ id: 'L1', name: '图层 1', visible: true, locked: false, active: true }],
     getActiveLayer() {
@@ -53,6 +54,7 @@
         name: '标注 ' + (++this.annotCounter),
         visible: true, locked: false, active: true
       };
+      this.layers.forEach(layer => { layer.active = false; });
       this.layers.unshift(l);
       obj.layerId = l.id;
       renderLayers();
@@ -98,11 +100,12 @@
   function refreshSnaps() {
     const mags = CV.getObjects().filter(o => o.type === 'magnifier' || o.type === 'squareMagnifier');
     if (!mags.length) { APP.needsSnap = false; return; }
+    const visibility = mags.map(m => m.visible);
     mags.forEach(m => { m.visible = false; });
     let snap = null;
     try { snap = CV.toCanvasElement(1); } catch (err) { snap = null; }
+    finally { mags.forEach((m, i) => { m.visible = visibility[i]; }); }
     mags.forEach(m => {
-      m.visible = true;
       if (snap) { m._snap = snap; m.set('dirty', true); }
     });
     APP.needsSnap = false;
@@ -113,6 +116,8 @@
   const EXTRA = ['mosaicOverlay', 'fillColor', 'fillOpacity', 'cornerRadius', 'lockScalingX', 'lockScalingY', 'minScaleLimit', 'layerId'];
   const hist = { undo: [], redo: [], max: 25 };
   let histTimer = null;
+  let stateTask = Promise.resolve();
+  let draftTimer = null, draftReady = false, draftFailed = false, draftWriting = false, draftAgain = false;
 
   // 历史快照 = { objs, mosaic, layers }：
   // - objs   标注对象 JSON（不含马赛克层，大幅减小体积）
@@ -125,7 +130,7 @@
   }
   function serializeLayers() {
     return APP.layers.map(l => ({
-      id: l.id, name: l.name, visible: l.visible, locked: l.locked, active: l.active
+      id: l.id, name: l.name, visible: l.visible, locked: l.locked, active: l.active, group: l.group || ''
     }));
   }
   function makeEntry() {
@@ -138,84 +143,164 @@
     return {
       objs: JSON.stringify(historyJSON()),
       mosaic: mosaicSrc || (last ? last.mosaic : null),
-      layers: serializeLayers()
+      layers: serializeLayers(), scale: deepCopy(APP.scale)
     };
   }
   function pushHistory() {
     if (APP.restoring || APP.batch) return;
     if (!CV._baseImage) return;
+    clearTimeout(histTimer); histTimer = null;
     let entry;
     try { entry = makeEntry(); } catch (e) { return; }
     const last = hist.undo[hist.undo.length - 1];
     if (last && last.objs === entry.objs && last.mosaic === entry.mosaic &&
-        JSON.stringify(last.layers) === JSON.stringify(entry.layers)) return;
+        JSON.stringify(last.layers) === JSON.stringify(entry.layers) && JSON.stringify(last.scale) === JSON.stringify(entry.scale)) return;
     hist.undo.push(entry);
     if (hist.undo.length > hist.max) hist.undo.shift();
     hist.redo.length = 0;
     updateHistButtons();
+    updateDirty(); scheduleDraft();
   }
   function pushHistoryDebounced() {
     clearTimeout(histTimer);
-    histTimer = setTimeout(pushHistory, 500);
+    const tab = APP.tabs[APP.activeTabIndex];
+    histTimer = setTimeout(() => {
+      histTimer = null;
+      if (APP.tabs[APP.activeTabIndex] === tab) pushHistory();
+    }, 500);
+    updateHistButtons();
+    updateDirty(); scheduleDraft();
   }
+  function flushHistory() {
+    if (histTimer !== null) { clearTimeout(histTimer); histTimer = null; pushHistory(); }
+  }
+  function stateKey(json, layers, scale, name, mosaic) {
+    return JSON.stringify({ json, layers: layers.map(l => ({ id: l.id, name: l.name,
+      visible: l.visible, locked: l.locked, group: l.group || '' })), scale, name, mosaic: mosaic || null });
+  }
+  function currentKey() {
+    const tab = APP.tabs[APP.activeTabIndex], last = hist.undo[hist.undo.length - 1];
+    return stateKey(JSON.stringify(historyJSON()), serializeLayers(), APP.scale, tab && tab.name, last && last.mosaic);
+  }
+  function tabKey(tab) {
+    const last = tab.hist.undo[tab.hist.undo.length - 1];
+    return stateKey(tab.json, tab.layers, tab.scale, tab.name, last ? last.mosaic : (tab.mosaicEl ? tab.mosaicEl.toDataURL('image/png') : null));
+  }
+  function updateDirty() {
+    APP.tabs.forEach((tab, i) => { tab.dirty = tab.savedKey !== (i === APP.activeTabIndex && !APP.restoring ? currentKey() : tabKey(tab)); });
+    renderTabs();
+    const status = document.getElementById('saveStatus');
+    if (status) status.textContent = CV._baseImage && APP.tabs[APP.activeTabIndex] ? CV._baseW + '×' + CV._baseH + ' · ' + (APP.tabs[APP.activeTabIndex].dirty ? '未保存 *' : '已保存') : '无图片';
+  }
+  function scheduleDraft() {
+    if (!draftReady || draftFailed) return;
+    clearTimeout(draftTimer); draftTimer = setTimeout(writeDraft, 1500);
+  }
+  async function writeDraft() {
+    clearTimeout(draftTimer); draftTimer = null;
+    if (!draftReady || draftFailed) return;
+    if (draftWriting) { draftAgain = true; return; }
+    draftWriting = true;
+    try {
+      if (APP.restoring) { scheduleDraft(); return; }
+      if (!APP.tabs.length) await DraftStore.clear();
+      else await DraftStore.write({ savedAt: Date.now(), workspace: workspaceProject() });
+      const status = document.getElementById('draftStatus');
+      if (status) { status.dataset.state = 'ready'; status.textContent = '草稿 ' + new Date().toLocaleTimeString() + '（非工程备份）'; }
+    } catch (err) {
+      draftFailed = true;
+      toast('自动草稿不可用：' + err.message + '。请使用「保存工程 / 工作区」手动备份。');
+      const status = document.getElementById('draftStatus'); if (status) status.textContent = '自动草稿不可用，请手动保存';
+    } finally { draftWriting = false; if (draftAgain) { draftAgain = false; scheduleDraft(); } }
+  }
+  async function initDrafts() {
+    try {
+      const draft = await DraftStore.read();
+      if (draft && window.confirm('发现浏览器草稿（' + new Date(draft.savedAt).toLocaleString() + '）。是否恢复为新标签页？取消将丢弃草稿。草稿不等同于手动工程备份。')) {
+        await importProject(draft.workspace, true);
+      } else if (draft) await DraftStore.clear();
+      draftReady = true; scheduleDraft();
+      const status = document.getElementById('draftStatus'); if (status) status.dataset.state = 'ready';
+    } catch (err) {
+      draftFailed = true;
+      toast('草稿不可用或已损坏：' + err.message + '。当前内容未被替换，请手动保存。');
+      const status = document.getElementById('draftStatus'); if (status) status.textContent = '草稿不可用，请手动保存';
+    }
+  }
+  window.addEventListener('beforeunload', e => {
+    updateDirty();
+    if (APP.tabs.some(tab => tab.dirty)) { e.preventDefault(); e.returnValue = ''; }
+  });
   function undo() {
+    if (APP.restoring) return;
+    flushHistory();
     if (hist.undo.length < 2) return;
     hist.redo.push(hist.undo.pop());
-    restore(hist.undo[hist.undo.length - 1]);
+    return restore(hist.undo[hist.undo.length - 1]);
   }
   function redo() {
+    if (APP.restoring) return;
+    flushHistory();
     if (!hist.redo.length) return;
     const e = hist.redo.pop();
     hist.undo.push(e);
-    restore(e);
+    return restore(e);
   }
   function restore(entry) {
     APP.restoring = true;
     const token = ++APP.restoreToken;
     TOOLMGR.cancelAction();
     const base = CV._baseImage;
+    APP.scale = deepCopy(entry.scale || { pxPerUnit: 1, unit: '' });
     CV.clear();
-    CV.loadFromJSON(JSON.parse(entry.objs), () => {
+    CV._mosaicLayer = null; CV._mosaicCtx = null;
+    stateTask = loadCanvasObjects(JSON.parse(entry.objs), token, async () => {
       if (APP.restoreToken !== token) return;
       afterRestore(base);
       // 恢复图层列表并应用（图层操作可撤销）
       APP.layers = (entry.layers || []).map(l => ({
-        id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active
+        id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active, group: l.group || ''
       }));
       if (!APP.layers.some(l => l.active) && APP.layers[0]) APP.layers[0].active = true;
       reconcileLayers();
       applyLayerOrder();
       // 恢复马赛克层（快照中的 dataURL，异步重建）
-      recreateMosaicFromSrc(entry.mosaic || null, token);
+      await recreateMosaicFromSrc(entry.mosaic || null, token);
       renderLayers();
       renderPanel();
       APP.restoring = false;
       updateHistButtons();
+      updateDirty(); scheduleDraft();
+    });
+    return stateTask;
+  }
+  function loadCanvasObjects(json, token, done) {
+    return new Promise((resolve, reject) => {
+      try { F.util.enlivenObjects(json.objects || [], objects => {
+        if (APP.restoreToken !== token) { resolve(false); return; }
+        Promise.resolve().then(async () => {
+          if (APP.restoreToken !== token) return false;
+          objects.forEach(o => CV.add(o)); await done(); return true;
+        }).then(resolve, reject);
+      }); } catch (err) { APP.restoring = false; reject(err); }
+    }).catch(err => {
+      if (APP.restoreToken === token) { APP.restoring = false; toast('内容恢复失败：' + err.message); }
+      return false;
     });
   }
   // 从 dataURL 重建马赛克层（token 用于防止异步回调串台）
-  function recreateMosaicFromSrc(src, token) {
+  async function recreateMosaicFromSrc(src, token) {
     if (!src) { CV._mosaicLayer = null; CV._mosaicCtx = null; return; }
-    const img = new Image();
-    img.onload = () => {
-      if (APP.restoreToken !== token || !CV._baseImage) return;
-      const oc = document.createElement('canvas');
-      oc.width = CV._baseW; oc.height = CV._baseH;
-      const ctx = oc.getContext('2d');
-      ctx.drawImage(img, 0, 0, CV._baseW, CV._baseH);
-      const layer = new fabric.Image(oc, {
-        left: 0, top: 0, originX: 'left', originY: 'top',
-        selectable: false, evented: false, objectCaching: false, mosaicOverlay: true
-      });
-      APP.skipNextAdd = true;
-      CV.add(layer);
-      CV.sendToBack(CV._baseImage);
-      CV._mosaicLayer = layer;
-      CV._mosaicCtx = ctx;
-      markSnap();
-      CV.requestRenderAll();
-    };
-    img.src = src;
+    const img = await ImageResources.image(src);
+    if (APP.restoreToken !== token || !CV._baseImage) return;
+    const oc = ImageResources.canvas(img, CV._baseW, CV._baseH);
+    const layer = new fabric.Image(oc, {
+      left: 0, top: 0, originX: 'left', originY: 'top',
+      selectable: false, evented: false, objectCaching: false, mosaicOverlay: true
+    });
+    APP.skipNextAdd = true; CV.add(layer); CV.sendToBack(CV._baseImage);
+    CV._mosaicLayer = layer; CV._mosaicCtx = oc.getContext('2d');
+    markSnap(); CV.requestRenderAll();
   }
   function afterRestore(base) {
     if (base && CV.getObjects().indexOf(base) === -1) {
@@ -278,12 +363,50 @@
       });
     });
   }
+  const selectedLayers = new Set();
+  function selectLayer(id, multi, group) {
+    if (group) { selectedLayers.clear(); APP.layers.filter(l => l.group === group).forEach(l => selectedLayers.add(l.id)); }
+    else {
+      if (!multi) selectedLayers.clear();
+      if (multi && selectedLayers.has(id)) selectedLayers.delete(id); else selectedLayers.add(id);
+    }
+    setActiveLayer(id);
+    CV.discardActiveObject();
+    const objects = CV.getObjects().filter(o => !isPinned(o) && selectedLayers.has(o.layerId) && o.visible && o.selectable);
+    if (objects.length) {
+      CV.setActiveObject(objects.length === 1 ? objects[0] : new F.ActiveSelection(objects, { canvas: CV }));
+      const c = CV.getActiveObject().getCenterPoint(), screen = F.util.transformPoint(c, CV.viewportTransform);
+      if (screen.x < 0 || screen.y < 0 || screen.x > CV.width || screen.y > CV.height) {
+        const vt = CV.viewportTransform.slice(); vt[4] += CV.width / 2 - screen.x; vt[5] += CV.height / 2 - screen.y; CV.setViewportTransform(vt);
+      }
+    }
+    CV.requestRenderAll(); renderPanel();
+  }
+  function batchLayers(action) {
+    flushHistory();
+    const layers = APP.layers.filter(l => selectedLayers.has(l.id));
+    if (!layers.length) { toast('请点击图层；Ctrl/Shift 点击可多选'); return; }
+    const group = action === 'group' ? window.prompt('逻辑组名称（留空取消分组）', layers[0].group || '') : null;
+    if (action === 'group' && group === null) return;
+    const hide = layers.some(l => l.visible), lock = layers.some(l => !l.locked);
+    if (action === 'delete') {
+      APP.batch++; try { CV.getObjects().slice().forEach(o => { if (!isPinned(o) && selectedLayers.has(o.layerId)) CV.remove(o); }); } finally { APP.batch--; }
+      APP.layers = APP.layers.filter(l => !selectedLayers.has(l.id));
+      if (!APP.layers.length) APP.layers = defaultLayers(); selectedLayers.clear();
+    } else layers.forEach(l => {
+      if (action === 'visible') l.visible = !hide;
+      if (action === 'lock') l.locked = lock;
+      if (action === 'group') l.group = group.trim().slice(0, 80);
+    });
+    CV.discardActiveObject(); reconcileLayers(); applyLayerOrder(); renderLayers(); renderPanel(); pushHistory();
+  }
   function setActiveLayer(id) {
     APP.layers.forEach(l => { l.active = l.id === id; });
     renderLayers();
     renderPanel();
   }
   function addLayer() {
+    flushHistory();
     const l = {
       id: layerUid(),
       name: '图层 ' + (APP.layers.length + 1),
@@ -295,6 +418,7 @@
     toast('已新建「' + l.name + '」');
   }
   function removeLayer(id) {
+    flushHistory();
     if (APP.layers.length <= 1) { toast('至少保留一个图层'); return; }
     APP.batch++;
     CV.getObjects().forEach(o => { if (o.layerId === id) CV.remove(o); });
@@ -309,6 +433,7 @@
     toast('已删除图层');
   }
   function toggleLayerVisible(id) {
+    flushHistory();
     const l = APP.layers.find(x => x.id === id);
     if (!l) return;
     l.visible = !l.visible;
@@ -319,6 +444,7 @@
     pushHistory();
   }
   function toggleLayerLock(id) {
+    flushHistory();
     const l = APP.layers.find(x => x.id === id);
     if (!l) return;
     l.locked = !l.locked;
@@ -338,6 +464,7 @@
     pushHistory();
   }
   function moveLayerTo(id, toIndex) {
+    flushHistory();
     const from = APP.layers.findIndex(l => l.id === id);
     if (from < 0 || from === toIndex) return;
     const item = APP.layers.splice(from, 1)[0];
@@ -369,6 +496,8 @@
     APP.layers.forEach((l, idx) => {
       const row = el('div', 'layer-row' + (l.active ? ' active' : '') + (l.locked ? ' locked' : ''));
       row.draggable = true;
+      row.tabIndex = 0; row.setAttribute('role', 'button');
+      row.onkeydown = e => { if (e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); selectLayer(l.id, e.ctrlKey || e.metaKey || e.shiftKey, e.altKey ? l.group : null); } };
       row.dataset.id = l.id;
       row.addEventListener('dragstart', e => {
         e.dataTransfer.setData('text/plain', l.id);
@@ -385,7 +514,8 @@
       const vis = el('button', 'layer-btn', l.visible ? '👁' : '🚫');
       vis.title = l.visible ? '隐藏图层' : '显示图层';
       vis.onclick = e => { e.stopPropagation(); toggleLayerVisible(l.id); };
-      const name = el('span', 'layer-name', l.name + (l.active ? '（当前）' : ''));
+      const name = el('span', 'layer-name', (l.group ? '[' + l.group + '] ' : '') + l.name + (l.active ? '（当前）' : ''));
+      row.classList.toggle('selected', selectedLayers.has(l.id));
       const lock = el('button', 'layer-btn', l.locked ? '🔒' : '🔓');
       lock.title = l.locked ? '解锁图层' : '锁定图层';
       lock.onclick = e => { e.stopPropagation(); toggleLayerLock(l.id); };
@@ -397,19 +527,39 @@
       row.appendChild(name);
       row.appendChild(lock);
       row.appendChild(del);
-      row.addEventListener('click', () => setActiveLayer(l.id));
+      row.title = '单击选择；Ctrl/Shift 多选；Alt 点击选择整个逻辑组；双击名称重命名';
+      row.addEventListener('click', e => selectLayer(l.id, e.ctrlKey || e.metaKey || e.shiftKey, e.altKey ? l.group : null));
+      name.ondblclick = e => {
+        e.stopPropagation(); const value = window.prompt('图层名称', l.name);
+        if (value && value.trim()) { flushHistory(); l.name = value.trim(); renderLayers(); pushHistory(); }
+      };
       list.appendChild(row);
     });
   }
 
   /* ---------- 图片载入 / 多图标签页 ---------- */
   function loadImageFile(file) {
-    if (!file || !file.type || !file.type.startsWith('image/')) { toast('请选择图片文件'); return; }
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); openNewTab(img); };
-    img.onerror = () => { URL.revokeObjectURL(url); toast('图片加载失败'); };
-    img.src = url;
+    return new Promise(resolve => {
+      if (!file || !file.type || !file.type.startsWith('image/')) { toast('不是图片：' + (file && file.name)); resolve(false); return; }
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = async () => {
+        try { await openNewTab(img, file.name); resolve(true); }
+        catch (err) { toast('图片「' + file.name + '」载入失败：' + err.message); resolve(false); }
+        finally { URL.revokeObjectURL(url); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); toast('图片「' + file.name + '」解码失败'); resolve(false); };
+      img.src = url;
+    });
+  }
+  let importQueue = Promise.resolve();
+  function loadImageFiles(files) {
+    const list = Array.from(files || []);
+    importQueue = importQueue.then(async () => {
+      const failures = [];
+      for (const file of list) if (!await loadImageFile(file)) failures.push(file.name);
+      if (failures.length) window.alert('以下文件未导入：\n' + failures.join('\n'));
+    }).catch(err => toast('批量导入失败：' + err.message));
+    return importQueue;
   }
   function defaultLayers() {
     return [{ id: 'L1', name: '图层 1', visible: true, locked: false, active: true }];
@@ -417,17 +567,14 @@
   function emptyObjectsJSON() {
     return JSON.stringify({ version: fabric.version, objects: [] });
   }
-  function openNewTab(imgEl) {
+  function openNewTab(imgEl, name) {
+    const image = ImageResources.prepare(imgEl);
     saveCurrentTab();
-    let w = imgEl.naturalWidth || imgEl.width, h = imgEl.naturalHeight || imgEl.height;
-    const MAXD = 4096;
-    const sc = Math.min(1, MAXD / Math.max(w, h));
-    w = Math.round(w * sc); h = Math.round(h * sc);
-    imgEl.width = w; imgEl.height = h;
+    const w = image.w, h = image.h;
     const tab = {
       id: 'T' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name: '图片 ' + (APP.tabs.length + 1),
-      imgEl: imgEl, w: w, h: h,
+      name: name || '图片 ' + (APP.tabs.length + 1),
+      imgEl: image.element, w: w, h: h,
       json: emptyObjectsJSON(),
       mosaicEl: null,
       layers: defaultLayers(),
@@ -437,13 +584,20 @@
       mosaicVersion: 0,
       stepCounter: 1,
       annotCounter: 0,
-      sizeScale: 1
+      sizeScale: Math.max(0.5, Math.min(3, Math.min(w, h) / 900)),
+      scale: { pxPerUnit: 1, unit: '' }
     };
     APP.tabs.push(tab);
-    activateTab(APP.tabs.length - 1);
+    const activation = activateTab(APP.tabs.length - 1);
+    if (image.original.w !== w || image.original.h !== h) {
+      activation.then(() => toast('图片已重采样：' + image.original.w + '×' + image.original.h + ' → ' + w + '×' + h + '，请按工作图重新标定比例'));
+    }
+    return activation;
   }
   // 保存当前标签页状态（切换前调用）
   function saveCurrentTab() {
+    if (APP.restoring) return;
+    flushHistory();
     if (APP.activeTabIndex < 0 || !CV._baseImage) return;
     const tab = APP.tabs[APP.activeTabIndex];
     if (!tab) return;
@@ -457,15 +611,20 @@
     tab.stepCounter = APP.stepCounter;
     tab.annotCounter = APP.annotCounter;
     tab.sizeScale = APP.sizeScale;
+    tab.scale = deepCopy(APP.scale);
   }
   function activateTab(i, skipSave) {
+    if (APP.restoring) return stateTask.then(() => activateTab(i, skipSave));
+    cancelViewportAnim();
+    selectedLayers.clear();
     if (i < 0 || i >= APP.tabs.length) return;
     if (!skipSave) saveCurrentTab();
+    TOOLMGR.cancelAction();
     APP.activeTabIndex = i;
     const tab = APP.tabs[i];
     const token = ++APP.restoreToken;
     APP.layers = tab.layers.map(l => ({
-      id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active
+      id: l.id, name: l.name || '图层', visible: l.visible !== false, locked: !!l.locked, active: !!l.active, group: l.group || ''
     }));
     hist.undo = tab.hist.undo.slice();
     hist.redo = tab.hist.redo.slice();
@@ -474,6 +633,7 @@
     APP.stepCounter = tab.stepCounter || 1;
     APP.annotCounter = tab.annotCounter || 0;
     APP.sizeScale = tab.sizeScale || 1;
+    APP.scale = deepCopy(tab.scale || { pxPerUnit: 1, unit: '' });
     APP.restoring = true;
     CV.clear();
     CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
@@ -488,7 +648,7 @@
     CV.add(base);
     CV.sendToBack(base);
     CV.discardActiveObject();
-    CV.loadFromJSON(JSON.parse(tab.json), () => {
+    stateTask = loadCanvasObjects(JSON.parse(tab.json), token, () => {
       if (APP.restoreToken !== token) return;
       afterRestore(base);
       // 恢复马赛克层（保留的 canvas 元素，同步）
@@ -507,12 +667,14 @@
       applyLayerOrder();
       if (tab.viewport) CV.setViewportTransform(tab.viewport);
       else fitZoom();
+      updateZoomLabel();
       // 新标签页的初始快照
       if (!hist.undo.length) {
         hist.undo = [makeEntry()];
         hist.lastMosaicVersion = APP.mosaicVersion;
       }
       APP.restoring = false;
+      if (tab.cleanOnOpen) { tab.savedKey = currentKey(); tab.cleanOnOpen = false; }
       hideDropTip();
       resizeCanvas();
       updateHistButtons();
@@ -521,10 +683,17 @@
       renderPanel();
       CV.requestRenderAll();
       toast('已打开「' + tab.name + '」');
+      TOOLMGR.updateHint();
+      updateDirty(); scheduleDraft();
     });
+    return stateTask;
   }
   function closeTab(i) {
+    if (APP.restoring) { const tab = APP.tabs[i]; return stateTask.then(() => closeTab(APP.tabs.indexOf(tab))); }
     if (i < 0 || i >= APP.tabs.length) return;
+    flushHistory();
+    updateDirty();
+    if (APP.tabs[i].dirty && !window.confirm('「' + APP.tabs[i].name + '」有未保存的修改。仍要关闭吗？浏览器草稿不能代替工程备份。')) return;
     // 关闭的是当前标签页时，模块状态仍属于被关闭页：
     // 需跳过 activateTab 里的 saveCurrentTab，避免用被关闭页的内容覆盖目标标签页
     const wasActive = i === APP.activeTabIndex;
@@ -552,6 +721,8 @@
     } else {
       activateTab(Math.max(0, Math.min(APP.activeTabIndex, APP.tabs.length - 1)), wasActive);
     }
+    updateDirty();
+    scheduleDraft();
   }
   function renderTabs() {
     const bar = document.getElementById('tabbar');
@@ -562,13 +733,19 @@
     addBtn.onclick = () => document.getElementById('fileInput').click();
     bar.appendChild(addBtn);
     APP.tabs.forEach((t, i) => {
-      const tab = el('div', 'tab' + (i === APP.activeTabIndex ? ' active' : ''), t.name);
+      const tab = el('div', 'tab' + (i === APP.activeTabIndex ? ' active' : ''), t.name + (t.dirty ? ' *' : ''));
       tab.title = '切换到「' + t.name + '」';
-      const close = el('span', 'tab-close', '✕');
-      close.title = '关闭';
+      tab.tabIndex = 0; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(i === APP.activeTabIndex));
+      tab.onkeydown = e => { if (e.target === tab && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); activateTab(i); } };
+      const close = el('button', 'tab-close', '✕');
+      close.title = '关闭「' + t.name + '」'; close.setAttribute('aria-label', close.title);
       close.onclick = e => { e.stopPropagation(); closeTab(i); };
       tab.appendChild(close);
       tab.onclick = () => activateTab(i);
+      tab.ondblclick = () => {
+        const name = window.prompt('图片名称（用于导出文件名）', t.name);
+        if (name && name.trim()) { t.name = name.trim(); updateDirty(); scheduleDraft(); }
+      };
       bar.appendChild(tab);
     });
   }
@@ -683,43 +860,12 @@
     if (el0) el0.classList.toggle('show', !!on);
   }
   // 渲染导出画布（边界 = 图片 ∪ 所有标注，放大镜除外），返回离屏 canvas
-  function renderExportCanvas() {
-    if (!CV._baseImage) return null;
-    const opt = APP.exportOpts || {};
-    const scale = opt.scale || 1;
-    let left = 0, top = 0, right = CV._baseW, bottom = CV._baseH;
-    if (opt.includeOutside !== false) {
-      CV.getObjects().forEach(o => {
-        if (o.type === 'magnifier' || o.type === 'squareMagnifier') return;
-        const b = objectLogicalBounds(o);
-        if (!b) return;
-        left = Math.min(left, b.left); top = Math.min(top, b.top);
-        right = Math.max(right, b.right); bottom = Math.max(bottom, b.bottom);
-      });
-    }
-    const W = Math.max(1, Math.round(right - left));
-    const H = Math.max(1, Math.round(bottom - top));
-    // 极大导出（标注拖到很远处）时等比限制尺寸
-    const MAXD = 8192;
-    const baseZoom = Math.max(W, H) > MAXD ? MAXD / Math.max(W, H) : 1;
-    const zoom = baseZoom * scale;
-    const outW = Math.max(1, Math.round(W * zoom));
-    const outH = Math.max(1, Math.round(H * zoom));
-    const savedZT = CV.viewportTransform.slice();
-    const savedW = CV.getWidth(), savedH = CV.getHeight();
-    const mags = CV.getObjects().filter(o => o.type === 'magnifier' || o.type === 'squareMagnifier');
-    mags.forEach(m => { m.visible = false; });
-    CV.setViewportTransform([zoom, 0, 0, zoom, -left * zoom, -top * zoom]);
-    CV.setDimensions({ width: outW, height: outH });
-    let canvas = null;
-    try { canvas = CV.toCanvasElement(1); } catch (e) { canvas = null; }
-    CV.setViewportTransform(savedZT);
-    CV.setDimensions({ width: savedW, height: savedH });
-    mags.forEach(m => { m.visible = true; });
-    CV.requestRenderAll();
-    return canvas;
+  function renderExportCanvas(format) {
+    try { return ExportRenderer.render(CV, APP.exportOpts, format || 'png'); }
+    catch (err) { toast('导出失败：' + err.message); return null; }
   }
   function exportImage(format) {
+    if (window.ExportUI) { ExportUI.open(format); return; }
     if (!CV._baseImage) { toast('请先上传图片'); return; }
     showExporting(true);
     const isPng = format === 'png';
@@ -729,7 +875,7 @@
     const finish = (blob) => {
       showExporting(false);
       if (!blob) { toast('导出失败'); return; }
-      downloadBlob(blob, isPng ? 'annotation.png' : 'annotation.jpg');
+      downloadBlob(blob, ImageResources.filename(APP.tabs[APP.activeTabIndex].name) + (isPng ? '.png' : '.jpg'));
       toast('已导出 ' + (isPng ? 'PNG' : 'JPG') + '（' + Math.round(blob.size / 1024) + ' KB）');
     };
     if (isPng) {
@@ -788,143 +934,152 @@
       doCopy();
     }, 'image/png');
   }
-  async function saveProject() {
-    if (!CV._baseImage) { toast('请先上传图片'); return; }
-    const data = {
-      app: 'image-annotator',
-      version: 1,
-      base: { src: CV._baseImgEl.toDataURL('image/png'), w: CV._baseW, h: CV._baseH },
-      settings: {
-        scale: APP.scale, textProps: APP.textProps, shapeProps: APP.shapeProps,
-        lineProps: APP.lineProps, calloutBg: APP.calloutBg,
-        stepCounter: APP.stepCounter, stepRadius: APP.stepRadius,
-        annotCounter: APP.annotCounter
-      },
-      layers: APP.layers,
-      objects: CV.toJSON(EXTRA)
+  function tabProject(tab) {
+    if (!tab.baseSrc) tab.baseSrc = ImageResources.data(tab.imgEl, tab.w, tab.h);
+    return {
+      app: 'image-annotator', version: ProjectStore.version, name: tab.name,
+      base: { src: tab.baseSrc, w: tab.w, h: tab.h },
+      settings: { scale: deepCopy(tab.scale), textProps: APP.textProps, shapeProps: APP.shapeProps,
+        lineProps: APP.lineProps, calloutBg: APP.calloutBg, stepCounter: tab.stepCounter,
+        stepRadius: APP.stepRadius, annotCounter: tab.annotCounter },
+      layers: tab.layers, objects: JSON.parse(tab.json),
+      mosaic: tab.mosaicEl ? tab.mosaicEl.toDataURL('image/png') : null,
+      viewport: tab.viewport
     };
+  }
+  function workspaceProject() {
+    saveCurrentTab();
+    return { app: 'image-annotator-workspace', version: 1, active: APP.activeTabIndex,
+      tabs: APP.tabs.map(tabProject) };
+  }
+  async function writeJSON(data, filename) {
     const json = JSON.stringify(data);
-    // 优先弹出「另存为」对话框让用户选择存放位置（Chrome/Edge 支持 File System Access API）
     if (window.showSaveFilePicker) {
       try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: 'annotation-project.json',
-          types: [{ description: 'JSON 工程文件', accept: { 'application/json': ['.json'] } }]
-        });
+        const handle = await window.showSaveFilePicker({ suggestedName: filename,
+          types: [{ description: 'JSON 工程文件', accept: { 'application/json': ['.json'] } }] });
         const writable = await handle.createWritable();
-        await writable.write(json);
-        await writable.close();
-        toast('工程已保存');
-        return;
+        try { await writable.write(json); await writable.close(); }
+        catch (err) { try { await writable.abort(); } catch (_) {} throw err; }
+        return true;
       } catch (err) {
-        if (err && err.name === 'AbortError') return; // 用户取消
-        // 其它异常（权限、旧浏览器等）降级为直接下载
+        if (err.name === 'AbortError') return false;
+        if (err.name !== 'SecurityError' && err.name !== 'NotSupportedError') throw err;
       }
     }
-    downloadBlob(new Blob([json], { type: 'application/json' }), 'annotation-project.json');
-    toast('工程已保存');
+    downloadBlob(new Blob([json], { type: 'application/json' }), filename);
+    return true;
+  }
+  async function saveProject(all) {
+    if (!CV._baseImage || APP.restoring) { toast('请先上传图片并等待载入完成'); return false; }
+    try {
+      saveCurrentTab();
+      const targets = all === true ? APP.tabs.slice() : [APP.tabs[APP.activeTabIndex]];
+      const keys = targets.map(tab => tabKey(tab));
+      const data = all === true ? workspaceProject() : tabProject(targets[0]);
+      const ok = await writeJSON(data, all === true ? 'annotation-workspace.json' : ImageResources.filename(targets[0].name) + '.project.json');
+      if (!ok) return false;
+      targets.forEach((tab, i) => { tab.savedKey = keys[i]; });
+      updateDirty();
+      toast(window.showSaveFilePicker ? '工程保存完成' : '工程已交给浏览器下载，请确认文件已保存');
+      return true;
+    } catch (err) { toast('工程保存失败：' + err.message); return false; }
+  }
+  function preparedTab(prepared, draft) {
+    const d = prepared.data, settings = d.settings;
+    return {
+      id: layerUid(), name: d.name || '工程 ' + (APP.tabs.length + 1),
+      imgEl: prepared.base, w: d.base.w, h: d.base.h,
+      json: JSON.stringify(d.objects), mosaicEl: prepared.mosaic,
+      layers: d.layers && d.layers.length ? d.layers : defaultLayers(), viewport: d.viewport || null,
+      hist: { undo: [], redo: [] }, lastMosaicVersion: -1, mosaicVersion: prepared.mosaic ? 1 : 0,
+      stepCounter: settings.stepCounter || 1, annotCounter: settings.annotCounter || 0,
+      sizeScale: Math.max(0.5, Math.min(3, Math.min(d.base.w, d.base.h) / 900)),
+      scale: deepCopy(settings.scale), cleanOnOpen: !draft && !prepared.warnings.length
+    };
+  }
+  async function importProject(data, draft) {
+    // All validation and resource decoding happen before appending any tabs.
+    const workspace = data.app === 'image-annotator-workspace';
+    const prepared = workspace ? await ProjectStore.prepareWorkspace(data) : { tabs: [await ProjectStore.prepare(data)], active: 0 };
+    saveCurrentTab();
+    const first = APP.tabs.length;
+    const tabs = prepared.tabs.map(p => preparedTab(p, draft));
+    const settings = prepared.tabs[prepared.active].data.settings;
+    ['textProps', 'shapeProps', 'lineProps', 'calloutBg'].forEach(key => { if (settings[key]) Object.assign(APP[key], deepCopy(settings[key])); });
+    if (Number.isFinite(settings.stepRadius) && settings.stepRadius > 0 && settings.stepRadius <= 4096) APP.stepRadius = settings.stepRadius;
+    APP.tabs.push(...tabs);
+    // Non-active loaded tabs also receive a saved fingerprint.
+    tabs.forEach(tab => { if (tab.cleanOnOpen) tab.savedKey = tabKey(tab); });
+    await activateTab(first + prepared.active);
+    const warnings = prepared.tabs.flatMap(p => p.warnings);
+    if (warnings.length) window.alert('工程部分恢复：\n' + warnings.join('\n'));
+    else toast(draft ? '草稿已恢复，请手动保存工程文件作为备份' : '工程已载入为新标签页');
+    scheduleDraft();
+    return tabs;
   }
   function loadProject(file) {
+    if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        if (!data.base || !data.objects) throw new Error('文件格式不正确');
-        const img = new Image();
-        img.onload = () => {
-          img.width = data.base.w; img.height = data.base.h;
-          // 工程作为一个新标签页载入
-          saveCurrentTab();
-          let layers = defaultLayers();
-          if (Array.isArray(data.layers) && data.layers.length) {
-            layers = data.layers.map(l => ({
-              id: l.id || 'L1',
-              name: l.name || '图层',
-              visible: l.visible !== false,
-              locked: !!l.locked,
-              active: !!l.active
-            }));
-          }
-          if (!layers.some(l => l.active)) layers[0].active = true;
-          let annotCounter = (data.settings && data.settings.annotCounter) || 0;
-          if (!annotCounter) {
-            annotCounter = layers.reduce((m, l) => {
-              const n = parseInt(String(l.name || '').replace(/.*?(\d+).*/, '$1'), 10);
-              return Number.isFinite(n) ? Math.max(m, n) : m;
-            }, 0);
-          }
-          if (data.settings) {
-            Object.assign(APP.scale, data.settings.scale || {});
-            Object.assign(APP.textProps, data.settings.textProps || {});
-            Object.assign(APP.shapeProps, data.settings.shapeProps || {});
-            Object.assign(APP.lineProps, data.settings.lineProps || {});
-            Object.assign(APP.calloutBg, data.settings.calloutBg || {});
-            APP.stepRadius = data.settings.stepRadius || 18;
-            APP.stepCounter = data.settings.stepCounter || 1;
-          }
-          const tab = {
-            id: 'T' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-            name: '工程 ' + (APP.tabs.length + 1),
-            imgEl: img, w: data.base.w, h: data.base.h,
-            json: JSON.stringify(data.objects),
-            mosaicEl: null,
-            layers: layers,
-            viewport: null,
-            hist: { undo: [], redo: [] },
-            lastMosaicVersion: 0,
-            mosaicVersion: 0,
-            stepCounter: APP.stepCounter,
-            annotCounter: annotCounter,
-            sizeScale: Math.max(0.5, Math.min(3, Math.min(data.base.w, data.base.h) / 900))
-          };
-          APP.tabs.push(tab);
-          activateTab(APP.tabs.length - 1);
-        };
-        img.src = data.base.src;
-      } catch (err) {
-        APP.restoring = false;
-        toast('工程载入失败：' + err.message);
-      }
+    reader.onload = async () => {
+      try { await importProject(JSON.parse(reader.result), false); }
+      catch (err) { toast('工程载入失败：' + err.message); }
     };
+    reader.onerror = () => toast('工程读取失败');
     reader.readAsText(file);
   }
 
   /* ---------- 选中对象操作 ---------- */
+  function pruneLayers() {
+    const ids = new Set(CV.getObjects().filter(o => !isPinned(o)).map(o => o.layerId));
+    APP.layers = APP.layers.filter(l => ids.has(l.id) || !/^标注 \d+$/.test(l.name));
+    if (!APP.layers.length) APP.layers = defaultLayers();
+    if (!APP.layers.some(l => l.active)) APP.layers[0].active = true;
+    renderLayers();
+  }
   function deleteSelection() {
     const objs = CV.getActiveObjects();
     if (!objs.length) return;
-    objs.forEach(o => CV.remove(o));
+    flushHistory(); APP.batch++;
+    try { objs.forEach(o => CV.remove(o)); } finally { APP.batch--; }
+    pruneLayers();
     CV.discardActiveObject();
     CV.requestRenderAll();
     pushHistory();
     renderPanel();
   }
-  function duplicateSelection() {
+  async function duplicateSelection() {
     const objs = CV.getActiveObjects();
     if (!objs.length) return;
-    const clones = [];
-    objs.forEach(o => {
-      try {
-        const data = o.toObject(EXTRA);
-        const klass = F.util.getKlass(o.type);
-        const c = new klass(data);
-        c.set({ left: (o.left || 0) + 16, top: (o.top || 0) + 16 });
-        CV.add(c);
-        clones.push(c);
-      } catch (err) { /* 忽略无法复制的对象 */ }
-    });
-    if (clones.length) {
+    flushHistory();
+    const owner = APP.tabs[APP.activeTabIndex];
+    const matrices = objs.map(o => o.calcTransformMatrix().slice());
+    try {
+      const clones = await Promise.all(objs.map(o => new Promise((resolve, reject) => {
+        try { o.clone(c => c ? resolve(c) : reject(new Error('对象无法复制')), EXTRA); }
+        catch (err) { reject(err); }
+      })));
+      if (APP.tabs[APP.activeTabIndex] !== owner) { toast('复制已取消：图片已切换'); return; }
+      CV.discardActiveObject();
+      APP.batch++;
+      try { clones.forEach((c, i) => {
+        F.util.applyTransformToObject(c, matrices[i]);
+        c.set({ left: c.left + 16, top: c.top + 16, layerId: null });
+        APP.assignAnnotationLayer(c); CV.add(c); c.setCoords();
+      }); } finally { APP.batch--; }
       CV.setActiveObject(clones.length > 1 ? new F.ActiveSelection(clones, { canvas: CV }) : clones[0]);
       CV.requestRenderAll();
       pushHistory();
       renderPanel();
-    }
+    } catch (err) { toast('复制失败：' + err.message); }
   }
 
   /* ---------- 多选对齐（左/水平居中/右/顶部/垂直居中/底部） ---------- */
   function alignSelection(align) {
-    const objs = CV.getActiveObjects();
+    flushHistory();
+    const objs = CV.getActiveObjects().slice();
     if (objs.length < 2) { toast('请至少选中两个对象'); return; }
+    CV.discardActiveObject();
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     objs.forEach(o => {
       const b = objectLogicalBounds(o);
@@ -949,6 +1104,7 @@
         o.setCoords();
       }
     });
+    CV.setActiveObject(new F.ActiveSelection(objs, { canvas: CV }));
     CV.requestRenderAll();
     pushHistory();
     renderPanel();
@@ -967,6 +1123,7 @@
     return s;
   }
   function row(label, ctrl) {
+    if (ctrl && ctrl.setAttribute) ctrl.setAttribute('aria-label', label);
     const r = el('div', 'frow');
     r.appendChild(el('label', 'flabel', label));
     r.appendChild(ctrl);
@@ -1093,9 +1250,7 @@
   function applyRelayout(obj) {
     obj.set('dirty', true);
     if (typeof obj.relayout === 'function') {
-      obj.relayout();
-      obj.set({ left: obj._offX || obj.left, top: obj._offY || obj.top });
-      obj.setCoords();
+      F.AnnotationGeometry.relayout(obj);
     }
     CV.requestRenderAll();
     markSnap();
@@ -1301,14 +1456,12 @@
     } else if (t === 'dimension' || t === 'angleMeasure' || t === 'areaMeasure') {
       if (t === 'dimension' || t === 'areaMeasure') {
         const s = sec('测量比例');
-        s.appendChild(row('比例(px/单位)', numField(obj.scale, { min: 0.01, max: 1000, step: 1 }, v => {
-          obj.scale = v;
-          applyRelayout(obj);
-          pushHistoryDebounced();
+        s.appendChild(row('比例(px/单位)', numField(obj.scale, { min: 0.000000001, max: 100000000, step: 0.01 }, v => {
+          setMeasurementScale(v, APP.scale.unit, true);
         })));
         const u = el('input', 'itext');
         u.value = obj.unit;
-        u.addEventListener('input', () => { obj.unit = u.value; applyRelayout(obj); });
+        u.addEventListener('input', () => setMeasurementScale(APP.scale.pxPerUnit, u.value, true));
         s.appendChild(row('单位名称', u));
         p.appendChild(s);
       }
@@ -1343,16 +1496,26 @@
 
   function measureSection() {
     const s = sec('测量比例');
-    s.appendChild(row('比例(px/单位)', numField(APP.scale.pxPerUnit, { min: 0.01, max: 1000, step: 1 }, v => {
-      APP.scale.pxPerUnit = v;
-      saveUserData();
+    s.appendChild(row('比例(px/单位)', numField(APP.scale.pxPerUnit, { min: 0.000000001, max: 100000000, step: 0.01 }, v => {
+      setMeasurementScale(v, APP.scale.unit, true);
     })));
     const u = el('input', 'itext');
     u.value = APP.scale.unit;
-    u.addEventListener('input', () => { APP.scale.unit = u.value; saveUserData(); });
+    u.addEventListener('input', () => setMeasurementScale(APP.scale.pxPerUnit, u.value, true));
     s.appendChild(row('单位名称', u));
-    s.appendChild(el('p', 'fnote', '比例为 1 时按像素显示；设置比例后按「单位」显示。'));
+    const calibrate = el('button', 'btn full', '两点比例标定 / 重新标定');
+    calibrate.onclick = () => TOOLMGR.select('calibrate'); s.appendChild(calibrate);
+    s.appendChild(el('p', 'fnote', '比例为工作图像素/单位；修改会更新本图全部长度与面积测量，可撤销。照片透视和镜头畸变会影响精度。Esc 取消标定。'));
     return s;
+  }
+  function setMeasurementScale(value, unit, debounced) {
+    if (!(Number.isFinite(value) && value > 0 && value <= 1e8) || typeof unit !== 'string' || unit.length > 32) { toast('比例须为 0 到 1 亿之间的有限正数，单位最多 32 字'); return false; }
+    APP.scale = { pxPerUnit: value, unit: unit.trim() };
+    CV.getObjects().forEach(o => {
+      if (o.type === 'dimension' || o.type === 'areaMeasure') { o.scale = value; o.unit = APP.scale.unit; applyRelayout(o); }
+    });
+    debounced ? pushHistoryDebounced() : pushHistory();
+    return true;
   }
   function calloutBgSection() {
     const s = sec('文字框背景');
@@ -1413,9 +1576,12 @@
       if (!f) return;
       const url = URL.createObjectURL(f);
       const img = new Image();
+      const owner = APP.tabs[APP.activeTabIndex];
       img.onload = () => {
-        URL.revokeObjectURL(url);
-        const obj = new F.Image(img, { left: 0, top: 0, originX: 'left', originY: 'top' });
+        try {
+        if (APP.tabs[APP.activeTabIndex] !== owner) { toast('贴图载入已取消：图片已切换'); return; }
+        const pixels = ImageResources.prepare(img).element;
+        const obj = new F.Image(pixels, { left: 0, top: 0, originX: 'left', originY: 'top' });
         CV.add(obj);
         obj.setCoords();
         CV.requestRenderAll();
@@ -1424,7 +1590,10 @@
         TOOLMGR.select('select');
         CV.setActiveObject(obj);
         renderPanel();
+        } catch (err) { toast('贴图载入失败：' + err.message); }
+        finally { URL.revokeObjectURL(url); }
       };
+      img.onerror = () => { URL.revokeObjectURL(url); toast('贴图图片无法解码'); };
       img.src = url;
     });
     s.appendChild(fi);
@@ -1637,13 +1806,17 @@
   APP.markSnap = markSnap;
   APP.toast = toast;
   APP.popIn = popIn;
+  Object.assign(APP, { saveProject, importProject, workspaceProject, activateTab, closeTab,
+    duplicateSelection, applyRelayout, refreshSnaps, renderExportCanvas, writeDraft, updateDirty,
+    setMeasurementScale, flushHistory, savePreferences: saveUserData, deleteSelection, alignSelection,
+    downloadBlob, loadProject, renderLayers, applyLayerOrder, batchLayers, loadImageFiles });
   APP.__hist = hist; // 测试/调试钩子：暴露撤销栈
 
   /* ---------- 画布事件 ---------- */
   CV.on('object:added', e => {
+    if (APP.skipNextAdd) { APP.skipNextAdd = false; return; }
     if (APP.restoring) return;
     if (e.target && e.target._temp) return;
-    if (APP.skipNextAdd) { APP.skipNextAdd = false; return; }
     const o = e.target;
     if (o && !isPinned(o)) {
       if (!o.shadow && APP.annoShadowOn) o.shadow = APP.annoShadow;
@@ -1671,27 +1844,25 @@
     if (o && o.__ptDrag) {
       o.__ptDrag = false;
       if (typeof o.relayout === 'function') {
-        o.relayout();
-        o.set({ left: o._offX || o.left, top: o._offY || o.top });
-        o.setCoords();
+        F.AnnotationGeometry.relayout(o);
       }
       o.set('dirty', true);
     }
     // 文字缩放后把比例合并进字号，保证面板字号与实际显示一致
     if (o && o.type === 'annoText' && o.tx) {
       const s = (o.scaleX + o.scaleY) / 2;
-      if (Math.abs(s - 1) > 0.001) {
-        o.tx.fontSize = Math.max(6, Math.round(o.tx.fontSize * s));
-        o.set({ scaleX: 1, scaleY: 1 });
-        o.relayout();
-        o.set({ left: o._offX || o.left, top: o._offY || o.top });
-        o.setCoords();
+      if (Math.abs(s - 1) > 0.001 && Math.abs(o.scaleX - o.scaleY) < 0.001 && !o.skewX && !o.skewY) {
+        F.AnnotationGeometry.relayout(o, () => {
+          o.tx.fontSize = Math.max(6, o.tx.fontSize * s);
+          o.set({ scaleX: 1, scaleY: 1 });
+        });
         o.set('dirty', true);
         if (CV._activeObject === o) renderPanel();
       }
     }
     // 引出类/曲线类对象：角点缩放后把比例合并进内容坐标（否则拖动控制点松手后整体偏移）
     if (o && typeof o.bakeScale === 'function') o.bakeScale();
+    if (o && ['dimension', 'areaMeasure', 'angleMeasure'].includes(o.type)) F.AnnotationGeometry.relayout(o);
     if (!APP.batch) pushHistory();
     markSnap();
   });
@@ -1701,6 +1872,7 @@
   CV.on('selection:cleared', onSelectionChange);
   // 指针捕获：拖动对象/手柄时鼠标移出画布也持续跟手（fabric 的 mousemove 只绑在画布元素上）
   CV.on('mouse:down', e => {
+    flushHistory();
     const t = e.target;
     if (t && e.e && e.e.pointerId != null) {
       try { CV.upperCanvasEl.setPointerCapture(e.e.pointerId); } catch (err) { /* 忽略 */ }
@@ -1724,13 +1896,15 @@
   /* ---------- 顶栏按钮 ---------- */
   document.getElementById('btnUpload').onclick = () => document.getElementById('fileInput').click();
   document.getElementById('fileInput').addEventListener('change', e => {
-    loadImageFile(e.target.files[0]);
+    loadImageFiles(e.target.files);
     e.target.value = '';
   });
   document.getElementById('btnExport').onclick = () => exportImage('png');
   document.getElementById('btnExportJpg').onclick = () => exportImage('jpg');
   document.getElementById('btnCopy').onclick = copyPngToClipboard;
-  document.getElementById('btnSave').onclick = saveProject;
+  document.getElementById('btnSave').onclick = () => saveProject(false);
+  document.getElementById('btnSaveWorkspace').onclick = () => saveProject(true);
+  document.getElementById('btnLoadWorkspace').onclick = () => document.getElementById('projectInput').click();
   document.getElementById('btnLoad').onclick = () => document.getElementById('projectInput').click();
   document.getElementById('projectInput').addEventListener('change', e => {
     loadProject(e.target.files[0]);
@@ -1747,6 +1921,7 @@
 
   /* ---------- 键盘 ---------- */
   window.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) {
       if (e.key === 'Escape') t.blur();
@@ -1797,8 +1972,7 @@
   wrap.addEventListener('drop', e => {
     e.preventDefault();
     wrap.classList.remove('dragging');
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f && f.type && f.type.startsWith('image/')) loadImageFile(f);
+    loadImageFiles(e.dataTransfer.files);
   });
   wrap.addEventListener('contextmenu', e => {
     e.preventDefault();
@@ -1808,6 +1982,7 @@
     }
   });
   window.addEventListener('paste', e => {
+    if (e.target && (e.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName))) return;
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (const it of items) {
@@ -1841,7 +2016,6 @@
         lineProps: APP.lineProps,
         calloutBg: APP.calloutBg,
         annoShadowOn: APP.annoShadowOn,
-        scale: APP.scale,
         sticker: APP.sticker,
         stickerSize: APP.stickerSize,
         stepRadius: APP.stepRadius,
@@ -1863,7 +2037,6 @@
       if (d.lineProps) Object.assign(APP.lineProps, d.lineProps);
       if (d.calloutBg) Object.assign(APP.calloutBg, d.calloutBg);
       if (typeof d.annoShadowOn === 'boolean') APP.annoShadowOn = d.annoShadowOn;
-      if (d.scale) Object.assign(APP.scale, d.scale);
       if (d.sticker) APP.sticker = d.sticker;
       if (d.stickerSize) APP.stickerSize = d.stickerSize;
       if (d.stepRadius) APP.stepRadius = d.stepRadius;
@@ -1876,6 +2049,7 @@
 
   /* ---------- 侧边栏：全局样式（默认样式 + 应用到已有标注） ---------- */
   function applyGlobalToAll() {
+    flushHistory();
     const objs = CV.getObjects().filter(o => !isPinned(o));
     let count = 0;
     objs.forEach(o => {
@@ -1921,9 +2095,7 @@
       if (changed) {
         o.set('dirty', true);
         if (typeof o.relayout === 'function') {
-          o.relayout();
-          o.set({ left: o._offX || o.left, top: o._offY || o.top });
-          o.setCoords();
+          F.AnnotationGeometry.relayout(o);
         }
         count++;
       }
@@ -2015,7 +2187,7 @@
     return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
   };
   window.addEventListener('keydown', e => {
-    if (e.code === 'Space' && !e.repeat && !isTypingTarget(e)) {
+    if (!e.isComposing && e.keyCode !== 229 && e.code === 'Space' && !e.repeat && !isTypingTarget(e)) {
       spaceDown = true;
       canvasEl.style.cursor = 'grab';
       e.preventDefault();
@@ -2034,7 +2206,7 @@
 
   function hideDropTip() { document.getElementById('dropTip').style.display = 'none'; }
   function updateHistButtons() {
-    document.getElementById('btnUndo').disabled = hist.undo.length < 2;
+    document.getElementById('btnUndo').disabled = hist.undo.length < 2 && !histTimer;
     document.getElementById('btnRedo').disabled = !hist.redo.length;
   }
 
@@ -2048,4 +2220,5 @@
   renderLayers();
   renderTabs();
   updateHistButtons();
+  initDrafts();
 })();
