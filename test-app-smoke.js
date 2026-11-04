@@ -334,7 +334,7 @@ function check(name, cond) {
   tabEls[1].onclick();
   await tick();
   check('切到标签 2', APP.activeTabIndex === 1);
-  const closeTwo = tabEls[1].children[0];
+  const closeTwo = tabEls[1].children.find(child => child.className === 'tab-close');
   closeTwo.onclick({ stopPropagation() {} });
   await tick();
   check('关闭标签 2', APP.tabs.length === 1 && APP.activeTabIndex === 0);

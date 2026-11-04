@@ -733,7 +733,8 @@
     addBtn.onclick = () => document.getElementById('fileInput').click();
     bar.appendChild(addBtn);
     APP.tabs.forEach((t, i) => {
-      const tab = el('div', 'tab' + (i === APP.activeTabIndex ? ' active' : ''), t.name + (t.dirty ? ' *' : ''));
+      const tab = el('div', 'tab' + (i === APP.activeTabIndex ? ' active' : ''));
+      tab.appendChild(el('span', 'tab-label', t.name + (t.dirty ? ' *' : '')));
       tab.title = '切换到「' + t.name + '」';
       tab.tabIndex = 0; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(i === APP.activeTabIndex));
       tab.onkeydown = e => { if (e.target === tab && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); activateTab(i); } };

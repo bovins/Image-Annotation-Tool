@@ -7,6 +7,7 @@ const path = require('path');
   const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
   await page.goto(pathToFileURL(path.resolve('index.html')).href);
   await page.waitForFunction(() => window.ExportUI && window.APP);
+  await page.screenshot({ path: 'test-results/empty-dark.png' });
   await page.evaluate(async () => {
     const c = document.createElement('canvas'); c.width = 1000; c.height = 700;
     const ctx = c.getContext('2d'); ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, c.width, c.height);
@@ -38,7 +39,7 @@ const path = require('path');
   console.log(await page.evaluate(() => ({ scale: APP.scale, restoring: APP.restoring, history: APP.__hist.undo.length, layers: APP.layers.length })));
   await page.screenshot({ path: 'docs/editor-current.png' });
   await page.locator('#btnTheme').click(); await page.waitForTimeout(250);
-  await page.screenshot({ path: 'test-results/editor-light.png' });
+  await page.screenshot({ path: 'docs/editor-light.png' });
   await page.locator('#btnExport').click(); await page.waitForFunction(() => document.querySelector('.export-preview canvas'));
   await page.screenshot({ path: 'docs/export-preview.png' });
   console.log('Screenshots: Edge ' + browser.version() + ', 1366x768, file://');

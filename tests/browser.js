@@ -33,6 +33,33 @@ const assert = require('assert/strict');
     await page.evaluate(() => { window.showSaveFilePicker = undefined; document.getElementById('btnSave').click(); });
     await download;
   });
+  await test('workspace menu, theme icons and floating zoom retain working commands', async () => {
+    await page.locator('#workspaceMenu summary').click();
+    const download = page.waitForEvent('download'); await page.locator('#btnSaveWorkspace').click(); await download;
+    assert.equal(await page.locator('#workspaceMenu').evaluate(e => e.open), false);
+    await page.locator('#workspaceMenu summary').click();
+    const chooser = page.waitForEvent('filechooser'); await page.locator('#btnLoadWorkspace').click(); await (await chooser).setFiles([]);
+    assert.equal(await page.locator('#workspaceMenu').evaluate(e => e.open), false);
+    const zoom = await page.evaluate(() => CV.getZoom());
+    await page.locator('#btnZoomIn').click(); await page.waitForTimeout(250);
+    assert.ok(await page.evaluate(() => CV.getZoom()) > zoom);
+    await page.locator('#btnFit').click(); await page.waitForTimeout(250);
+    assert.equal(await page.locator('.zoom-tools').evaluate(bar => { const b = bar.getBoundingClientRect(), c = document.getElementById('canvasWrap').getBoundingClientRect(); return b.left >= c.left && b.right <= c.right && b.bottom <= c.bottom; }), true);
+    await page.locator('#btnTheme').click();
+    assert.equal(await page.locator('#btnTheme svg').count(), 1);
+    await page.locator('#btnTheme').click();
+    assert.equal(await page.locator('#btnTheme svg').count(), 1);
+    assert.equal(await page.locator('.tico svg').count(), 21);
+    await page.setViewportSize({ width: 1093, height: 614 });
+    await page.evaluate(() => ExportUI.open('png'));
+    await page.waitForFunction(() => document.querySelector('.export-preview canvas'));
+    const actionsVisible = await page.locator('.export-actions').evaluate(e => { const b = e.getBoundingClientRect(); return b.top >= 0 && b.bottom <= innerHeight; });
+    assert.equal(actionsVisible, true);
+    await page.locator('#exportCropH').scrollIntoViewIfNeeded();
+    assert.equal(await page.locator('#exportCropH').evaluate(e => { const b = e.getBoundingClientRect(), p = e.closest('.export-controls').getBoundingClientRect(); return b.top >= p.top && b.bottom <= p.bottom; }), true);
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.setViewportSize({ width: 1366, height: 768 });
+  });
   await test('8000x6000 resamples pixel source and Fabric size', async () => {
     await upload(8000, 6000, 'large.png');
     assert.deepEqual(await page.evaluate(() => [CV._baseW, CV._baseH, CV._baseImage.width, CV._baseImage.height,

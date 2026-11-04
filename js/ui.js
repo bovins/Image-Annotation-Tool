@@ -22,9 +22,51 @@
     const details = document.createElement('details'), summary = document.createElement('summary');
     summary.textContent = title.textContent; details.className = 'tool-category';
     details.open = prefs.categories && prefs.categories[summary.textContent] === true;
-    details.append(summary); Array.from(group.children).forEach(child => { if (child !== title) details.append(child); }); group.replaceWith(details);
+    const grid = document.createElement('div'); grid.className = 'tool-grid';
+    Array.from(group.children).forEach(child => { if (child !== title) grid.append(child); });
+    details.append(summary, grid); group.replaceWith(details);
     details.addEventListener('toggle', () => { prefs.categories = prefs.categories || {}; prefs.categories[summary.textContent] = details.open; persist(); });
   });
+  const globalStyles = document.querySelector('.global-group');
+  globalStyles.open = prefs.globalStyles === true;
+  globalStyles.addEventListener('toggle', () => { prefs.globalStyles = globalStyles.open; persist(); });
+
+  // Keep the existing buttons/handlers; only decorate their presentation.
+  const icons = window.UIIcons;
+  const commands = {
+    btnUpload: ['upload', '上传图片'], btnSave: ['save', '保存工程'], btnLoad: ['folder', '载入工程'],
+    btnExport: ['download', 'PNG'], btnExportJpg: ['image', 'JPG'], btnCopy: ['copy', '复制 PNG', true],
+    btnSaveWorkspace: ['save', '保存工作区'], btnLoadWorkspace: ['folder', '载入工作区'],
+    btnUndo: ['undo', '撤销', true], btnRedo: ['redo', '重做', true], btnDel: ['trash', '删除选中', true],
+    btnSidebar: ['leftPanel', '工具面板', true], btnPanel: ['rightPanel', '属性面板', true], btnHelp: ['help', '快捷键说明', true],
+    btnZoomOut: ['minus', '缩小', true], btnZoomIn: ['plus', '放大', true], btnFit: ['fit', '适应窗口', true]
+  };
+  Object.keys(commands).forEach(id => icons.button(document.getElementById(id), ...commands[id]));
+  document.getElementById('btnExport').setAttribute('aria-label', '导出 PNG');
+  document.getElementById('btnExportJpg').setAttribute('aria-label', '导出 JPG');
+  document.querySelector('.brand-mark').innerHTML = icons.svg('brand');
+  document.querySelector('.empty-symbol').innerHTML = icons.svg('image');
+  document.querySelectorAll('.tool-btn').forEach(b => { const icon = b.querySelector('.tico'); if (icon) icon.innerHTML = icons.svg(b.dataset.tool); });
+  const workspace = document.getElementById('workspaceMenu');
+  workspace.querySelector('summary').insertAdjacentHTML('afterbegin', icons.svg('mosaic'));
+  workspace.addEventListener('click', e => { if (e.target.closest('.menu-items button')) workspace.open = false; });
+  document.addEventListener('pointerdown', e => { if (!workspace.contains(e.target)) workspace.open = false; });
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') workspace.open = false; });
+  function themeIcon() {
+    const light = document.body.classList.contains('light'), button = document.getElementById('btnTheme');
+    const label = light ? '切换暗色主题' : '切换亮色主题'; button.title = label;
+    icons.button(button, light ? 'moon' : 'sun', label, true);
+  }
+  themeIcon(); new MutationObserver(themeIcon).observe(document.getElementById('btnTheme'), { childList: true });
+  function layerIcons() {
+    document.querySelectorAll('.layer-row').forEach(row => {
+      row.querySelectorAll('.layer-btn').forEach((b, i) => {
+        const name = b.classList.contains('danger') ? 'trash' : i === 0 ? (b.title === '显示图层' ? 'eyeOff' : 'eye') : (b.title === '解锁图层' ? 'lock' : 'unlock');
+        icons.button(b, name);
+      });
+    });
+  }
+  layerIcons(); new MutationObserver(layerIcons).observe(document.getElementById('layersList'), { childList: true, subtree: true });
   document.querySelectorAll('button').forEach(b => { if (!b.title) b.title = b.textContent.trim(); });
   const quick = document.createElement('div'); quick.className = 'quick-tools'; quick.hidden = true;
   quick.setAttribute('aria-label', '选中标注快捷操作');
