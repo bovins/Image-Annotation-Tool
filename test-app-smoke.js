@@ -61,6 +61,8 @@ global.requestAnimationFrame = () => 0;
 global.cancelAnimationFrame = () => {};
 global.addEventListener = () => {};
 global.removeEventListener = () => {};
+global.confirm = () => true;
+global.alert = () => {};
 global.localStorage = (() => {
   const m = {};
   return {
@@ -74,7 +76,11 @@ const els = {};
 // 记录 document 上的监听器（fabric 拖动时把 mouseup 绑在 document 上），供拖动模拟使用
 const docListeners = {};
 const docStub = {
-  createElement: (tag) => makeEl(tag),
+  createElement: (tag) => {
+    const element = makeEl(tag);
+    if (tag !== 'canvas') { delete element.toDataURL; delete element.toBlob; delete element.getContext; }
+    return element;
+  },
   createElementNS: () => makeEl('svg'),
   getElementById: (id) => els[id] || (els[id] = makeEl(id)),
   querySelectorAll: () => [],
@@ -89,7 +95,7 @@ const docStub = {
 };
 global.document = docStub;
 global.Image = class {
-  constructor() { this.width = 0; this.height = 0; this.naturalWidth = 400; this.naturalHeight = 300; this._src = ''; this.toDataURL = () => 'data:image/png;base64,AAA'; }
+  constructor() { this.width = 0; this.height = 0; this.naturalWidth = 400; this.naturalHeight = 300; this._src = ''; }
   addEventListener() {}
   set src(v) { this._src = v; setTimeout(() => { if (this.onload) this.onload(); }, 0); }
   get src() { return this._src; }
@@ -109,6 +115,9 @@ function check(name, cond) {
   const fabric = require('./vendor/fabric.min.js').fabric || require('./vendor/fabric.min.js');
   global.fabric = fabric;
   require('./js/objects.js');
+  require('./js/resources.js');
+  require('./js/project-store.js');
+  require('./js/export-renderer.js');
   require('./js/tools.js');
   require('./js/app.js'); // IIFE 启动：创建画布、绑定事件、渲染面板/图层/标签页
 
@@ -325,7 +334,7 @@ function check(name, cond) {
   tabEls[1].onclick();
   await tick();
   check('切到标签 2', APP.activeTabIndex === 1);
-  const closeTwo = tabEls[1].children[0];
+  const closeTwo = tabEls[1].children.find(child => child.className === 'tab-close');
   closeTwo.onclick({ stopPropagation() {} });
   await tick();
   check('关闭标签 2', APP.tabs.length === 1 && APP.activeTabIndex === 0);

@@ -196,7 +196,8 @@
 
   /* ---------- 内容坐标布局辅助 ----------
      复合对象使用“内容坐标”：对象宽度/高度 = 内容包围盒；
-     _offX/_offY = 内容区左上角（canvas 坐标），对象 left/top 与之对齐。 */
+     _offX/_offY 是内容包围盒的左上角（内容坐标），不是对象的画布位置。
+     渲染先减去内容中心，再经对象/父组矩阵得到世界坐标，最后经视口得到屏幕坐标。 */
   function setContentSize(obj, w, h) {
     obj.contentW = w; obj.contentH = h;
     obj.width = w; obj.height = h;
@@ -206,6 +207,33 @@
     ctx.translate(-(obj._offX || 0) - obj.contentW / 2, -(obj._offY || 0) - obj.contentH / 2);
   }
   function endContent(ctx) { ctx.restore(); }
+
+  // Content p -> centered object local p -> parent/world -> viewport/screen.
+  // Keep the content origin fixed, compensating the changed bounding box through
+  // the full affine matrix. left/top alone are not a geometric anchor.
+  function contentOrigin(obj) {
+    return F.util.transformPoint({ x: -(obj._offX || 0) - obj.contentW / 2,
+      y: -(obj._offY || 0) - obj.contentH / 2 }, obj.calcOwnMatrix());
+  }
+  function placeContentOrigin(obj, origin) {
+    const m = obj.calcOwnMatrix();
+    const x = (obj._offX || 0) + obj.contentW / 2, y = (obj._offY || 0) + obj.contentH / 2;
+    obj.setPositionByOrigin(new F.Point(origin.x + m[0] * x + m[2] * y,
+      origin.y + m[1] * x + m[3] * y), 'center', 'center');
+    obj.setCoords(); obj.set('dirty', true);
+  }
+  F.AnnotationGeometry = {
+    contentOrigin, placeContentOrigin,
+    relayout(obj, change) {
+      const origin = contentOrigin(obj);
+      if (change) change();
+      obj.relayout(); placeContentOrigin(obj, origin);
+    },
+    vector(obj, x, y) {
+      const m = obj.calcTransformMatrix();
+      return { x: m[0] * x + m[2] * y, y: m[1] * x + m[3] * y };
+    }
+  };
 
   /* ================= 文字 ================= */
   F.AnnoText = F.util.createClass(F.Object, {
@@ -731,18 +759,19 @@
      对象被角点缩放后 scaleX/Y ≠ 1，而内容坐标（anchor/textPos/points）不带比例；
      若直接用「冻结包围盒 + relayout」逻辑，松手后整体位置会偏移。
      这里把比例写回内容坐标并复位 scale=1，使之后拖动控制点不再跳位。
-     注意：fabric 拖动 tl/tr/bl/br 角点时会把 left/top 一起改动（围绕对角缩放），
-     因此换算必须保持「当前渲染位置不变」：渲染 = s*p + left - s*offX，
-     所以新坐标 = s*p + (left - s*offX)，否则每次缩放松手后整个标注都会跳。 */
+     把比例写入内容坐标，同时固定经原对象矩阵映射的内容原点。
+     用新的包围盒中心补偿位置，因此旋转、翻转和合法的零坐标不会丢失。 */
   function bakeContentScale() {
     const sx = this.scaleX, sy = this.scaleY;
     if (Math.abs(sx - 1) < 0.001 && Math.abs(sy - 1) < 0.001) return;
-    const left = this.left || 0, top = this.top || 0;
-    const ox = this._offX || 0, oy = this._offY || 0;
+    // Retain nonuniform/skew transforms rather than distorting text or applying
+    // the affine transform twice. Point controls already invert the full matrix.
+    if (Math.abs(sx - sy) > 0.001 || this.skewX || this.skewY) return;
+    const origin = contentOrigin(this);
     const k = (sx + sy) / 2;
     const sp = p => ({
-      x: sx * p.x + left - sx * ox,
-      y: sy * p.y + top - sy * oy
+      x: sx * p.x,
+      y: sy * p.y
     });
     if (this.anchor) this.anchor = sp(this.anchor);
     if (this.textPos) this.textPos = sp(this.textPos);
@@ -751,8 +780,8 @@
     if (Array.isArray(this.pts)) this.pts = this.pts.map(sp);
     if (this.ellipse) {
       this.ellipse = {
-        x: sx * this.ellipse.x + left - sx * ox,
-        y: sy * this.ellipse.y + top - sy * oy,
+        x: sx * this.ellipse.x,
+        y: sy * this.ellipse.y,
         rx: Math.max(1, this.ellipse.rx * sx),
         ry: Math.max(1, this.ellipse.ry * sy)
       };
@@ -763,8 +792,7 @@
     this.set({ scaleX: 1, scaleY: 1 });
     if (typeof this.relayout === 'function') {
       this.relayout();
-      this.set({ left: this._offX || this.left, top: this._offY || this.top });
-      this.setCoords();
+      placeContentOrigin(this, origin);
     }
     this.set('dirty', true);
   }
@@ -917,11 +945,15 @@
     },
     _loadImg(src) {
       const img = new Image();
+      this._ready = new Promise(resolve => {
       img.onload = () => {
         this._img = img; this._imgReady = true;
         if (this.canvas) this.canvas.requestRenderAll();
+        resolve(true);
       };
+      img.onerror = () => resolve(false);
       img.src = src;
+      });
     },
     relayout() {
       const b = this.boxPos, r = this.region;
@@ -992,16 +1024,22 @@
       this.relayout();
     },
     label() {
-      const len = Math.hypot(this.p2.x - this.p1.x, this.p2.y - this.p1.y);
-      if (this.scale && this.scale !== 1) {
-        return (len / this.scale).toFixed(2) + (this.unit ? ' ' + this.unit : '');
-      }
-      return Math.round(len) + ' px';
+      const v = F.AnnotationGeometry.vector(this, this.p2.x - this.p1.x, this.p2.y - this.p1.y);
+      const len = Math.hypot(v.x, v.y);
+      if (!(this.scale > 0 && Number.isFinite(this.scale))) return '比例无效';
+      if (this.scale === 1 && !this.unit) return Math.round(len) + ' px';
+      return (len / this.scale).toFixed(2) + ' ' + (this.unit || 'px');
     },
     relayout() {
       const M = this.offset + this.ext + 24;
-      const left = Math.min(this.p1.x, this.p2.x) - M, top = Math.min(this.p1.y, this.p2.y) - M;
-      const right = Math.max(this.p1.x, this.p2.x) + M, bottom = Math.max(this.p1.y, this.p2.y) + M;
+      let left = Math.min(this.p1.x, this.p2.x) - M, top = Math.min(this.p1.y, this.p2.y) - M;
+      let right = Math.max(this.p1.x, this.p2.x) + M, bottom = Math.max(this.p1.y, this.p2.y) + M;
+      const dx = this.p2.x - this.p1.x, dy = this.p2.y - this.p1.y, length = Math.hypot(dx, dy) || 1;
+      const x = (this.p1.x + this.p2.x) / 2 - dy / length * (this.offset + 4);
+      const y = (this.p1.y + this.p2.y) / 2 + dx / length * (this.offset + 4);
+      const text = TX.measure(this.label(), this.tx, 400);
+      left = Math.min(left, x - text.w / 2); right = Math.max(right, x + text.w / 2);
+      top = Math.min(top, y - text.h / 2); bottom = Math.max(bottom, y + text.h / 2);
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
     },
@@ -1060,8 +1098,9 @@
       this.relayout();
     },
     getAngle() {
-      const ax = this.p1.x - this.v.x, ay = this.p1.y - this.v.y;
-      const bx = this.p2.x - this.v.x, by = this.p2.y - this.v.y;
+      const a = F.AnnotationGeometry.vector(this, this.p1.x - this.v.x, this.p1.y - this.v.y);
+      const b = F.AnnotationGeometry.vector(this, this.p2.x - this.v.x, this.p2.y - this.v.y);
+      const ax = a.x, ay = a.y, bx = b.x, by = b.y;
       const la = Math.hypot(ax, ay) || 1, lb = Math.hypot(bx, by) || 1;
       let cos = (ax * bx + ay * by) / (la * lb);
       cos = clamp(cos, -1, 1);
@@ -1070,8 +1109,16 @@
     relayout() {
       const M = 34;
       const xs = [this.v.x, this.p1.x, this.p2.x], ys = [this.v.y, this.p1.y, this.p2.y];
-      const left = Math.min.apply(null, xs) - M, top = Math.min.apply(null, ys) - M;
-      const right = Math.max.apply(null, xs) + M, bottom = Math.max.apply(null, ys) + M;
+      let left = Math.min.apply(null, xs) - M, top = Math.min.apply(null, ys) - M;
+      let right = Math.max.apply(null, xs) + M, bottom = Math.max.apply(null, ys) + M;
+      const start = Math.atan2(this.p1.y - this.v.y, this.p1.x - this.v.x);
+      let sweep = Math.atan2(this.p2.y - this.v.y, this.p2.x - this.v.x) - start;
+      while (sweep > Math.PI) sweep -= Math.PI * 2;
+      while (sweep < -Math.PI) sweep += Math.PI * 2;
+      const x = this.v.x + Math.cos(start + sweep / 2) * 30, y = this.v.y + Math.sin(start + sweep / 2) * 30;
+      const text = TX.measure(this.getAngle().toFixed(1) + '°', this.tx, 200);
+      left = Math.min(left, x - text.w / 2); right = Math.max(right, x + text.w / 2);
+      top = Math.min(top, y - text.h / 2); bottom = Math.max(bottom, y + text.h / 2);
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
     },
@@ -1135,11 +1182,10 @@
       return Math.abs(s) / 2;
     },
     label() {
-      const a = this.area();
-      if (this.scale && this.scale !== 1) {
-        return (a / (this.scale * this.scale)).toFixed(2) + (this.unit ? ' ' + this.unit + '²' : '');
-      }
-      return Math.round(a) + ' px²';
+      const m = this.calcTransformMatrix();
+      const a = this.area() * Math.abs(m[0] * m[3] - m[1] * m[2]);
+      if (!(this.scale > 0 && Number.isFinite(this.scale))) return '比例无效';
+      return (a / (this.scale * this.scale)).toFixed(2) + ' ' + (this.unit || 'px') + '²';
     },
     relayout() {
       const pts = this.points;
@@ -1151,6 +1197,12 @@
       if (!isFinite(left)) { left = 0; top = 0; right = 1; bottom = 1; }
       const M = 30;
       left -= M; top -= M; right += M; bottom += M;
+      if (pts.length) {
+        const x = pts.reduce((n, p) => n + p.x, 0) / pts.length, y = pts.reduce((n, p) => n + p.y, 0) / pts.length;
+        const text = TX.measure('S = ' + this.label(), this.tx, 300);
+        left = Math.min(left, x - text.w / 2); right = Math.max(right, x + text.w / 2);
+        top = Math.min(top, y - text.h / 2); bottom = Math.max(bottom, y + text.h / 2);
+      }
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
     },
@@ -1426,7 +1478,9 @@
   function addFromObject(klass) {
     klass.fromObject = function (options, callback) {
       const obj = new klass(options);
-      if (callback) callback(obj);
+      if (callback) {
+        if (obj._ready) obj._ready.then(() => callback(obj)); else callback(obj);
+      }
       return obj;
     };
   }

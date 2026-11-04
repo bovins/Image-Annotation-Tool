@@ -151,6 +151,7 @@
         carrow: '按住拖动绘制曲线箭头；画完后选中曲线，可拖动蓝色圆点锚点调整形状。',
         step: '点击放置步骤序号（自动递增）；可在面板修改当前序号。',
         dim: '按住拖动测量两点间尺寸。',
+        calibrate: '两点比例标定：点击已知长度的两端，输入实际距离和单位；Esc 取消。照片透视和镜头畸变会影响精度。',
         angle: '依次点击：顶点 → 第一条边上的点 → 第二条边上的点。',
         area: '依次点击多边形顶点，右键或按 Enter 结束（至少 3 个点）。',
         ctext: '按下设定箭头锚点，拖动到目标位置放置文字（文字可自由拖动，选中后可拖动蓝色圆点分别调整锚点与文字位置）。',
@@ -172,6 +173,7 @@
     },
     addTemp(o) {
       o._temp = true;
+      o.excludeFromExport = true;
       o.selectable = false;
       o.evented = false;
       if (window.APP && window.APP.annoShadow && window.APP.annoShadowOn !== false) {
@@ -182,6 +184,7 @@
     },
     promote(o) {
       o._temp = false;
+      o.excludeFromExport = false;
       o.selectable = true;
       o.evented = true;
       if (!o.layerId && window.APP && window.APP.assignAnnotationLayer) {
@@ -193,6 +196,11 @@
     },
     // 完成一次标注：切回选择工具并选中新对象（便于立即调整样式）
     done(obj) {
+      if (window.APP && APP.continuous) {
+        this.state = {}; this.phaseHint = ''; this.updateHint();
+        if (obj && APP.popIn) APP.popIn(obj);
+        APP.renderPanel(); return;
+      }
       this.select('select');
       if (obj && obj.canvas) {
         this.cv.setActiveObject(obj);
@@ -213,6 +221,18 @@
 
     getP(e) {
       const p = this.cv.getPointer(e.e);
+      if (window.APP && APP.snapEnabled && this.current !== 'mosaic' && this.current !== 'select') {
+        const tolerance = 7 / (this.cv.getZoom() || 1);
+        const xs = [0, this.cv._baseW, this.cv._baseW / 2], ys = [0, this.cv._baseH, this.cv._baseH / 2];
+        this.cv.getObjects().filter(o => !o._temp && o.visible !== false && o !== this.cv._baseImage).forEach(o => {
+          const b = o.getBoundingRect(true, true); xs.push(b.left, b.left + b.width / 2, b.left + b.width);
+          ys.push(b.top, b.top + b.height / 2, b.top + b.height);
+        });
+        const closest = (n, list) => list.reduce((best, x) => Math.abs(n - x) < Math.abs(n - best) ? x : best, Infinity);
+        const x = closest(p.x, xs), y = closest(p.y, ys);
+        if (Math.abs(x - p.x) <= tolerance) p.x = x;
+        if (Math.abs(y - p.y) <= tolerance) p.y = y;
+      }
       return { x: p.x, y: p.y };
     },
 
@@ -246,6 +266,7 @@
 
     /* ---------- 鼠标事件分发 ---------- */
     onDown(e) {
+      if (window.APP && APP.restoring) return;
       const id = this.current;
       if (id === 'select') return;
       if (!this.cv._baseImage) {
@@ -254,6 +275,7 @@
       }
       const p = this.getP(e);
       switch (id) {
+        case 'calibrate': return this.calibrationDown(p);
         case 'text': return this.startText(p);
         case 'step': return this.placeStep(p);
         case 'sticker': return this.placeSticker(p);
@@ -282,7 +304,21 @@
       if (id === 'select') return;
       const st = this.state[id];
       if (!st) return;
-      const p = this.getP(e);
+      let p = this.getP(e);
+      if (id === 'calibrate') {
+        st.obj.pts[1] = p; this.relayoutOnCanvas(st.obj);
+        this.phaseHint = Math.hypot(p.x - st.p0.x, p.y - st.p0.y).toFixed(1) + ' 工作图像素，点击第二端点'; this.updateHint(); return;
+      }
+      if (e.e.shiftKey && st.p0) {
+        const dx = p.x - st.p0.x, dy = p.y - st.p0.y;
+        if (['line', 'arrow', 'dim'].includes(id)) {
+          const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * Math.PI / 4, length = Math.hypot(dx, dy);
+          p = { x: st.p0.x + Math.cos(angle) * length, y: st.p0.y + Math.sin(angle) * length };
+        } else if (['rect', 'msgbox'].includes(id)) {
+          const side = Math.max(Math.abs(dx), Math.abs(dy));
+          p = { x: st.p0.x + Math.sign(dx || 1) * side, y: st.p0.y + Math.sign(dy || 1) * side };
+        }
+      }
       switch (id) {
         case 'text': return this.moveText(st, p);
         case 'rect': return this.moveRect(st, p);
@@ -339,10 +375,31 @@
     },
 
     /* ---------- 布局辅助 ---------- */
+    calibrationDown(p) {
+      const st = this.state.calibrate;
+      if (!st) {
+        const obj = new F.AnnoLine({ pts: [p, p], line: this.lineP(), arrowhead: 'none' });
+        this.addTemp(obj); this.state.calibrate = { p0: p, obj }; this.relayoutOnCanvas(obj);
+        this.phaseHint = '移动查看预览，点击第二端点；Esc 取消'; this.updateHint();
+      } else {
+        const pixels = Math.hypot(p.x - st.p0.x, p.y - st.p0.y);
+        if (pixels < 0.001) { window.APP && APP.toast('两端点不能重合'); return; }
+        const distance = window.prompt('两点间实际距离（正数），当前 ' + pixels.toFixed(2) + ' 工作图像素', '10');
+        if (distance === null) { this.select('select'); return; }
+        if (!(Number.isFinite(Number(distance)) && Number(distance) > 0)) { APP.toast('实际距离必须为正数，请重新选择第二点'); return; }
+        const unit = window.prompt('单位名称（例如 mm）', APP.scale.unit || 'mm');
+        if (unit === null) { this.select('select'); return; }
+        const scale = pixels / Number(distance);
+        this.removeTemp();
+        if (APP.setMeasurementScale(scale, unit)) { this.select('select'); APP.toast('标定完成：' + scale.toFixed(4) + ' px/' + (unit || '单位')); }
+      }
+    },
     relayoutOnCanvas(obj) {
       obj.set('dirty', true);
       obj.relayout();
-      obj.set({ left: obj._offX || obj.left, top: obj._offY || obj.top });
+      if (!['annoText', 'messageBox', 'stepNumber'].includes(obj.type)) {
+        obj.set({ left: obj._offX, top: obj._offY });
+      }
       obj.setCoords();
       this.cv.requestRenderAll();
     },

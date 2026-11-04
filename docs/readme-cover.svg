@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="330" viewBox="0 0 1280 330" role="img" aria-labelledby="title description">
+  <title id="title">Image Annotation Tool — 工程图像，本地标注</title>
+  <desc id="description">石墨灰与蓝色的项目封面，展示箭头、尺寸线和工程示意图。纯前端、离线运行、数据留在本机。</desc>
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#334158"/></pattern>
+    <clipPath id="frame"><rect width="1280" height="330" rx="18"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="330" fill="#141c29"/>
+    <rect x="680" width="600" height="330" fill="url(#grid)"/>
+    <path d="M690 0v330" stroke="#27354a"/>
+    <rect x="46" y="38" width="38" height="38" rx="11" fill="#3971df"/>
+    <g transform="translate(52 44)" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 9V4h5m10 0h5v5m0 9v5h-5M8 23H3v-5"/>
+      <path d="m8 18 1-4 9-9 3 3-9 9-4 1Z"/>
+    </g>
+    <text x="97" y="55" font-family="Segoe UI,Arial,sans-serif" font-size="11" letter-spacing="2" fill="#9cacc4">BUILT FOR ENGINEERING IMAGES</text>
+    <text x="97" y="74" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="12" fill="#8ca1be">工程图像，本地标注</text>
+    <text x="44" y="133" font-family="Segoe UI,Arial,sans-serif" font-size="40" font-weight="650" letter-spacing="-.8" fill="#f0f5ff">Image Annotation Tool</text>
+    <text x="47" y="174" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="19" fill="#c1cfe2">标注清楚，测量有据，配图更高效。</text>
+    <text x="47" y="207" font-family="Segoe UI,Arial,sans-serif" font-size="13" fill="#93a6c2">Annotate · Calibrate · Organize · Export</text>
+    <g font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="11" text-anchor="middle">
+      <rect x="47" y="243" width="82" height="29" rx="7" fill="#22334e" stroke="#35517b"/>
+      <text x="88" y="262" fill="#c7dbff">纯前端</text>
+      <rect x="139" y="243" width="92" height="29" rx="7" fill="#1d2a3c" stroke="#344156"/>
+      <text x="185" y="262" fill="#b8c9e1">离线运行</text>
+      <rect x="241" y="243" width="116" height="29" rx="7" fill="#1d2a3c" stroke="#344156"/>
+      <text x="299" y="262" fill="#b8c9e1">数据留在本机</text>
+      <rect x="367" y="243" width="116" height="29" rx="7" fill="#1d2a3c" stroke="#344156"/>
+      <text x="425" y="262" fill="#b8c9e1">MIT LICENSE</text>
+    </g>
+    <rect x="740" y="39" width="488" height="250" rx="12" fill="#1b2535" stroke="#40516b"/>
+    <path d="M740 72h488" stroke="#35455e"/>
+    <circle cx="758" cy="56" r="3" fill="#8296b4"/>
+    <circle cx="771" cy="56" r="3" fill="#536a8a"/>
+    <circle cx="784" cy="56" r="3" fill="#536a8a"/>
+    <text x="804" y="60" font-family="Segoe UI,Arial,sans-serif" font-size="9" letter-spacing="1.3" fill="#9bafd0">LOCAL WORKSPACE</text>
+    <rect x="751" y="83" width="30" height="195" rx="5" fill="#222f43"/>
+    <g fill="none" stroke="#9ab2d6" stroke-width="1.5" stroke-linejoin="round">
+      <path d="m760 96 13 8-6 1-3 6-4-15Z"/>
+      <path d="M759 125h15m-7-3v17m-4 0h8"/>
+      <rect x="759" y="151" width="15" height="12" rx="1"/>
+      <path d="m759 190 14-14m-8 0h8v8"/>
+      <circle cx="767" cy="211" r="7"/>
+      <path d="M759 239h15m-15-5v10m15-10v10"/>
+    </g>
+    <rect x="792" y="83" width="425" height="195" rx="5" fill="#111c2c"/>
+    <rect x="792" y="83" width="425" height="195" rx="5" fill="url(#grid)"/>
+    <g fill="#263b58" stroke="#9bb2d3" stroke-width="1.7" stroke-linejoin="round">
+      <path d="M854 139h206v69H854Z"/>
+      <path d="M845 130h15v87h-15Z"/>
+      <path d="M1046 157h102v33h-102Z" fill="#39516f"/>
+      <path d="M875 208h24v23h-24Zm138 0h24v23h-24Z"/>
+    </g>
+    <path d="M824 174h345" stroke="#5d7da6" stroke-dasharray="5 5"/>
+    <g stroke="#78a8ff" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M854 216v35m206-35v35M854 245h206m-201-4-5 4 5 4m196-8 5 4-5 4"/>
+      <path d="m1090 109 38 38m-1-8 1 8-8-1" stroke="#f18888" stroke-width="2"/>
+    </g>
+    <rect x="933" y="236" width="48" height="16" rx="3" fill="#111c2c"/>
+    <text x="957" y="247" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#a9c7ff">86.00 mm</text>
+    <text x="1070" y="103" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#f5a4a4">Inspect</text>
+    <circle cx="831" cy="128" r="10" fill="#203651" stroke="#78a8ff"/>
+    <text x="831" y="132" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#c4d9ff">1</text>
+  </g>
+</svg>

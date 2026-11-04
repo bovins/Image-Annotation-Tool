@@ -24,27 +24,39 @@
 </script>
 
 <header class="topbar">
-  <div class="brand">🖍️ 图像标注工具</div>
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-copy"><strong>图像标注</strong><small>IMAGE ANNOTATOR</small></span><span class="offline-badge">离线</span></div>
   <div class="actions">
+    <div class="action-group file-actions" aria-label="图片与工程">
     <button class="btn primary" id="btnUpload">📤 上传图片</button>
-    <input type="file" id="fileInput" accept="image/*" hidden>
-    <button class="btn" id="btnExport" title="导出无损 PNG（图片外区域透明）">💾 导出 PNG</button>
-    <button class="btn" id="btnExportJpg" title="导出体积更小的 JPG（白色背景，速度更快）">🖼 导出 JPG</button>
-    <button class="btn" id="btnCopy" title="一键复制 PNG 到剪贴板，可直接粘贴">📋 复制 PNG</button>
+    <input type="file" id="fileInput" accept="image/*" multiple hidden>
     <button class="btn" id="btnSave" title="保存工程（JSON，可再次载入编辑）">📦 保存工程</button>
     <button class="btn" id="btnLoad" title="载入已保存的工程">📂 载入工程</button>
+    <details class="top-menu" id="workspaceMenu">
+      <summary class="btn" title="多图工作区管理">工作区 <span class="menu-chevron" aria-hidden="true">⌄</span></summary>
+      <div class="menu-items">
+        <div class="menu-caption">多图工程</div>
+        <button class="btn" id="btnSaveWorkspace" title="保存全部标签页">保存工作区</button>
+        <button class="btn" id="btnLoadWorkspace" title="载入工作区为新标签页，不覆盖当前内容">载入工作区</button>
+      </div>
+    </details>
     <input type="file" id="projectInput" accept=".json,application/json" hidden>
-    <span class="vsep"></span>
+    </div>
+    <div class="action-group export-actions-top" aria-label="导出">
+      <button class="btn" id="btnExport" title="导出无损 PNG（图片外区域透明）">💾 导出 PNG</button>
+      <button class="btn" id="btnExportJpg" title="导出体积更小的 JPG（白色背景，速度更快）">🖼 导出 JPG</button>
+      <button class="btn" id="btnCopy" title="一键复制 PNG 到剪贴板，可直接粘贴">📋 复制 PNG</button>
+    </div>
+    <div class="action-group history-actions" aria-label="编辑历史">
     <button class="btn" id="btnUndo" title="撤销 Ctrl+Z">↩ 撤销</button>
     <button class="btn" id="btnRedo" title="重做 Ctrl+Y">↪ 重做</button>
     <button class="btn" id="btnDel" title="删除选中 Delete">🗑 删除</button>
-    <span class="vsep"></span>
-    <button class="btn" id="btnZoomOut" title="缩小">−</button>
-    <button class="btn" id="btnZoomPct" title="100% 显示">100%</button>
-    <button class="btn" id="btnZoomIn" title="放大">+</button>
-    <button class="btn" id="btnFit" title="适应窗口">适应窗口</button>
-    <span class="vsep"></span>
+    </div>
+    <div class="action-group view-actions" aria-label="界面设置">
     <button class="btn" id="btnTheme" title="切换亮/暗主题">🌙</button>
+    <button class="btn" id="btnSidebar" title="折叠/展开左面板" aria-expanded="true">工具面板</button>
+    <button class="btn" id="btnPanel" title="折叠/展开右面板" aria-expanded="true">属性面板</button>
+    <button class="btn" id="btnHelp" title="查看快捷键说明">快捷键 ?</button>
+    </div>
   </div>
 </header>
 
@@ -52,8 +64,7 @@
   <aside class="sidebar">
     <div class="side-title">标注工具</div>
     <button class="tool-btn active" data-tool="select"><span class="tico">🖱️</span>选择 / 移动</button>
-
-    <div class="group">
+    <div class="group tools-group">
       <div class="gtitle">基础类</div>
       <button class="tool-btn" data-tool="text"><span class="tico">🅰️</span>文字</button>
       <button class="tool-btn" data-tool="rect"><span class="tico">▭</span>矩形</button>
@@ -93,10 +104,12 @@
       <button class="tool-btn" data-tool="mosaic"><span class="tico">🧩</span>马赛克</button>
     </div>
 
-    <div class="group global-group">
-      <div class="gtitle">全局样式</div>
+    <div class="side-title workflow-title">工作流与预设</div>
+    <div id="efficiencyBox"></div>
+    <details class="group global-group">
+      <summary class="gtitle">全局默认样式</summary>
       <div class="global-style" id="globalStyleBox"></div>
-    </div>
+    </details>
   </aside>
 
   <div class="stage">
@@ -104,12 +117,20 @@
       <div class="tabbar" id="tabbar"></div>
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="c" width="900" height="600"></canvas>
-        <div class="drop-tip" id="dropTip">拖拽图片到此处，或点击上方「上传图片」<br>支持 Ctrl+V 粘贴剪贴板图片</div>
+        <div class="drop-tip" id="dropTip"><div class="empty-card"><div class="empty-symbol" aria-hidden="true"></div><span class="empty-eyebrow">本地图像工作台</span><h1>把图片拖到这里，开始标注</h1><p>或点击上传图片 · 支持 <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴</p><span class="empty-privacy">纯前端离线处理，文件不会上传</span></div></div>
+        <div class="zoom-tools" aria-label="画布缩放">
+          <button class="btn" id="btnZoomOut" title="缩小">−</button>
+          <button class="btn" id="btnZoomPct" title="100% 显示">100%</button>
+          <button class="btn" id="btnZoomIn" title="放大">+</button>
+          <span class="vsep"></span>
+          <button class="btn" id="btnFit" title="适应窗口">适应窗口</button>
+        </div>
       </div>
     </div>
   </div>
 
   <aside class="panel" id="panel">
+    <div class="panel-heading"><strong>属性检查器</strong><span>PROPERTIES</span></div>
     <div id="panelContent"></div>
     <div class="layers-box">
       <div class="layers-head">
@@ -121,16 +142,21 @@
   </aside>
 </div>
 
-<footer class="hintbar" id="hint">请先上传图片，然后选择左侧标注工具开始标注。</footer>
+<footer class="hintbar"><span id="hint">请先上传图片，然后选择左侧标注工具开始标注。</span><span id="saveStatus"></span><span id="draftStatus" title="浏览器草稿可能被清理，请另存工程文件备份">浏览器草稿不代替工程备份</span></footer>
 <div id="toast"></div>
 <div id="exporting"><div class="spinner"></div>正在导出图片…</div>
 
 <script src="vendor/fabric.min.js"></script>
-<script>window.fabric || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.5.2/fabric.min.js"><\/script>');</script>
-<script>window.fabric || document.write('<script src="https://unpkg.com/fabric@5.5.2/dist/fabric.min.js"><\/script>');</script>
 <script src="js/objects.js"></script>
+<script src="js/resources.js"></script>
+<script src="js/project-store.js"></script>
+<script src="js/export-renderer.js"></script>
 <script src="js/tools.js"></script>
 <script src="js/app.js"></script>
-<script>if (!window.fabric) { document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#c33">Fabric.js 加载失败（本地与 CDN 均不可用），请检查网络后刷新页面。</div>'; }</script>
+<script src="js/efficiency.js"></script>
+<script src="js/export-ui.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/ui.js"></script>
+<script>if (!window.fabric) { document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#c33">本地 Fabric.js 文件缺失。请完整解压项目并保留 vendor 文件夹。</div>'; }</script>
 </body>
 </html>
