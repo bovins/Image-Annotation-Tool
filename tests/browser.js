@@ -892,6 +892,52 @@ const assert = require('assert/strict');
       assert.equal(await active(), bottom);
     } finally { await page.keyboard.up('Alt'); }
   });
+  await test('dimension heads join the shaft and stay separate at short spans in the canvas and PNG', async () => {
+    await upload(400, 300, 'dimension-arrow-joints.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'dimension-arrow-joints.png' && !APP.restoring);
+    const results = await page.evaluate(async () => {
+      APP.annoShadowOn = false;
+      CV.setViewportTransform([4, 0, 0, 4, 0, 0]);
+      const line = { color: '#ff5252', width: 3, haloColor: '#ffffff', haloWidth: 2 };
+      const tx = { ...DEF_TEXT, fill: 'transparent', outlineWidth: 0 };
+      const crop = { x: 0, y: 0, w: 200, h: 75 };
+      const tests = [['solid', 128], ...fabric.ArrowStyles.map(style => [style, 14])];
+      const results = [];
+      for (const [style, span] of tests) {
+        const left = 34, right = left + span, y = 46;
+        const obj = new fabric.Dimension({ p1: { x: left, y: 20 }, p2: { x: right, y: 20 },
+          offset: 26, ext: 5, line, tx, arrowStyle: style });
+        obj.set({ left: obj._offX, top: obj._offY });
+        CV.add(obj); CV.renderAll();
+        const exported = ExportRenderer.render(CV, { range: 'custom', crop, scale: 4 }, 'png');
+        const png = await new Promise(resolve => exported.toBlob(resolve, 'image/png'));
+        const image = await createImageBitmap(png);
+        const decoded = document.createElement('canvas');
+        decoded.width = image.width; decoded.height = image.height;
+        decoded.getContext('2d').drawImage(image, 0, 0);
+        image.close();
+        const checks = [CV.lowerCanvasEl, decoded].map(canvas => {
+          const ctx = canvas.getContext('2d');
+          const sample = (x, y) => ctx.getImageData(Math.floor(x * 4), Math.floor(y * 4), 1, 1).data;
+          const red = (x, y) => {
+            const [r, g, b, a] = sample(x, y);
+            return r > 220 && g < 145 && b < 145 && a > 220;
+          };
+          const tips = red(left, y) && red(right, y) && !red(left - 2, y) && !red(right + 2, y);
+          if (span === 128) return tips && red(left + 13, y) && red(right - 13, y);
+          const wing = style === 'diamond' ? 2.15 : 3.9;
+          return tips && sample(left + wing, y + 2.5)[3] > 120 &&
+            sample(right - wing, y + 2.5)[3] > 120 &&
+            sample(left + span / 2, y + 2.5)[3] === 0;
+        });
+        results.push({ style, span, checks, label: obj.label() });
+        CV.remove(obj);
+      }
+      return results;
+    });
+    assert.deepEqual(results, [['solid', 128], ...['solid', 'hollow', 'open', 'diamond'].map(style => [style, 14])]
+      .map(([style, span]) => ({ style, span, checks: [true, true], label: span + ' px' })));
+  });
   await test('no browser exceptions', () => assert.deepEqual(errors, []));
   await browser.close();
   process.exitCode = failures.length ? 1 : 0;

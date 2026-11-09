@@ -17,15 +17,20 @@ const path = require('path');
     ctx.fillStyle = '#e2e8f0'; ctx.fillRect(210, 260, 430, 160); ctx.strokeRect(210, 260, 430, 160);
     ctx.fillStyle = '#94a3b8'; ctx.fillRect(610, 305, 200, 70); ctx.strokeRect(610, 305, 200, 70);
     ctx.fillStyle = '#cbd5e1'; ctx.fillRect(190, 240, 35, 200); ctx.strokeRect(190, 240, 35, 200);
+    ctx.fillRect(465, 235, 27, 25); ctx.strokeRect(465, 235, 27, 25);
     ctx.fillStyle = '#94a3b8'; ctx.fillRect(250, 420, 60, 60); ctx.strokeRect(250, 420, 60, 60);
     ctx.fillRect(540, 420, 60, 60); ctx.strokeRect(540, 420, 60, 60);
     ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.setLineDash([8, 8]); ctx.beginPath(); ctx.moveTo(120, 340); ctx.lineTo(870, 340); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = '#334155'; ctx.font = '18px Arial'; ctx.fillText('A — Housing', 225, 550); ctx.fillText('B — Piston rod', 625, 550);
     const blob = await new Promise(r => c.toBlob(r)); await APP.loadImageFiles([new File([blob], '试验装置.png', { type: 'image/png' })]);
     APP.annoShadowOn = false; APP.setMeasurementScale(5, 'mm');
-    const dimension = new fabric.Dimension({ p1: { x: 210, y: 260 }, p2: { x: 640, y: 260 }, offset: -70, scale: 5, unit: 'mm', line: { color: '#334155', width: 2, haloWidth: 0 }, tx: { fill: '#334155', fontSize: 24 } });
-    // A positive offset is used below the housing, keeping the measured endpoints explicit.
-    dimension.offset = 220; dimension.relayout(); dimension.set({ left: dimension._offX, top: dimension._offY }); CV.add(dimension);
+    const dimension = new fabric.Dimension({ p1: { x: 210, y: 260 }, p2: { x: 640, y: 260 }, offset: 220, scale: 5, unit: 'mm', line: { color: '#334155', width: 2, haloWidth: 0 }, tx: { fill: '#334155', fontSize: 24 } });
+    const shortDimension = new fabric.Dimension({ p1: { x: 492, y: 235 }, p2: { x: 465, y: 235 }, offset: 32, scale: 5, unit: 'mm',
+      line: { color: '#0f766e', width: 3, haloColor: '#ffffff', haloWidth: 1.5 }, tx: { fill: '#0f766e', fontSize: 20 } });
+    for (const annotation of [dimension, shortDimension]) {
+      annotation.set({ left: annotation._offX, top: annotation._offY });
+      CV.add(annotation);
+    }
     const arrow = new fabric.AnnoLine({ pts: [{ x: 850, y: 205 }, { x: 770, y: 300 }], arrowhead: 'end',
       arrowStyle: 'open', arrowLen: 28, arrowHalf: 10, line: { color: '#ef4444', width: 4, haloColor: '#ffffff', haloWidth: 1 } });
     arrow.set({ left: arrow._offX, top: arrow._offY }); CV.add(arrow);

@@ -153,26 +153,6 @@
     drawFn();
     ctx.restore();
   }
-  // 填充图形双重描边：白色边框 + 彩色填充（用于箭头、圆点等实心图形）
-  function haloFill(ctx, s, drawFn) {
-    const color = s.color || s.stroke;
-    const haloColor = s.haloColor;
-    const haloWidth = s.haloWidth || 0;
-    ctx.save();
-    ctx.lineJoin = 'round';
-    if (haloWidth > 0 && haloColor) {
-      ctx.fillStyle = haloColor;
-      ctx.strokeStyle = haloColor;
-      ctx.lineWidth = haloWidth * 2;
-      drawFn();
-      ctx.fill();
-      ctx.stroke();
-    }
-    ctx.fillStyle = color || 'transparent';
-    drawFn();
-    ctx.fill();
-    ctx.restore();
-  }
   function fillStyle(ctx, s) {
     const o = s.fillOpacity || 0;
     if (o > 0) { ctx.fillStyle = s.fillColor || '#fff'; ctx.globalAlpha = clamp(o, 0, 1); }
@@ -212,28 +192,6 @@
     const shaftWidth = Math.min(width, distance * 0.26);
     const half = Math.max(shaftWidth * 0.85, fullHalf * len / fullLength);
     return { len, half, shaftWidth };
-  }
-  function drawArrowLine(ctx, obj, heads, shaft) {
-    const s = obj.line;
-    if (!heads.length) { haloStroke(ctx, s, shaft); return; }
-    const traceHeads = () => heads.forEach(head => head.path(ctx));
-    const drawHeads = () => { ctx.beginPath(); traceHeads(); };
-    const strokeHeads = () => { drawHeads(); ctx.stroke(); };
-    if (obj.arrowStyle === 'hollow') {
-      ctx.save();
-      clipOutsideHeads(ctx, traceHeads);
-      haloStroke(ctx, s, shaft);
-      haloStroke(ctx, { ...s, dash: null }, strokeHeads);
-      ctx.restore();
-      haloStroke(ctx, { ...s, dash: null, haloWidth: 0 }, strokeHeads);
-    } else {
-      haloStroke(ctx, s, shaft);
-      if (obj.arrowStyle === 'open') {
-        haloStroke(ctx, { ...s, dash: null }, strokeHeads);
-      } else {
-        haloFill(ctx, s, drawHeads);
-      }
-    }
   }
   function clipOutsideHeads(ctx, traceHeads) {
     // Anchors can move outside the object's bounds while dragging.
@@ -1118,22 +1076,26 @@
       const nx = -uy, ny = ux;
       const a1 = { x: p1.x + nx * this.offset, y: p1.y + ny * this.offset };
       const a2 = { x: p2.x + nx * this.offset, y: p2.y + ny * this.offset };
-      const s = this.line;
-      const fullLength = 9 + (s.width || 0), style = this.arrowStyle;
-      // Leave room between the two heads on short dimensions.
-      const len = style === 'solid' ? fullLength : Math.min(fullLength, L * 0.45);
-      const half = (4 + (s.width || 0) * 0.5) * len / fullLength;
-      const heads = L ? [
-        makeArrowHead(style, a1, -ux, -uy, len, half),
-        makeArrowHead(style, a2, ux, uy, len, half)
-      ] : [];
-      drawArrowLine(ctx, this, heads, () => {
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y); ctx.lineTo(a1.x + nx * this.ext, a1.y + ny * this.ext);
-        ctx.moveTo(p2.x, p2.y); ctx.lineTo(a2.x + nx * this.ext, a2.y + ny * this.ext);
-        ctx.moveTo(a1.x, a1.y); ctx.lineTo(a2.x, a2.y);
-        ctx.stroke();
-      });
+      if (L) {
+        const s = this.line, style = this.arrowStyle;
+        const width = Math.max(0, s.width || 0);
+        // Budget for both heads, including their rounded strokes, to leave a visible gap.
+        const { len, half, shaftWidth } = arrowMetrics(width, 9 + width, 4 + width / 2, L * 0.55);
+        const haloWidth = Math.min(s.haloWidth || 0, L / 16);
+        const heads = [
+          makeArrowHead(style, a1, -ux, -uy, len, half),
+          makeArrowHead(style, a2, ux, uy, len, half)
+        ];
+        const inset = style === 'open' ? 0 : len * (style === 'diamond' ? 0.75 : 1);
+        const trace = ctx => {
+          ctx.moveTo(p1.x, p1.y); ctx.lineTo(a1.x + nx * this.ext, a1.y + ny * this.ext);
+          ctx.moveTo(p2.x, p2.y); ctx.lineTo(a2.x + nx * this.ext, a2.y + ny * this.ext);
+          ctx.moveTo(a1.x + ux * inset, a1.y + uy * inset);
+          ctx.lineTo(a2.x - ux * inset, a2.y - uy * inset);
+        };
+        paintArrowPaths(ctx, { ...s, haloWidth }, style, new Map([[shaftWidth, [trace]]]),
+          heads.map(head => ({ path: head.path, width: shaftWidth })));
+      }
       const mid = { x: (a1.x + a2.x) / 2, y: (a1.y + a2.y) / 2 };
       const lp = { x: mid.x + nx * 4, y: mid.y + ny * 4 };
       const m = TX.measure(this.label(), this.tx, 400);
