@@ -104,12 +104,8 @@
       <button class="tool-btn" data-tool="mosaic"><span class="tico">🧩</span>马赛克</button>
     </div>
 
-    <div class="side-title workflow-title">工作流与预设</div>
+    <div class="side-title workflow-title">绘制辅助</div>
     <div id="efficiencyBox"></div>
-    <details class="group global-group">
-      <summary class="gtitle">全局默认样式</summary>
-      <div class="global-style" id="globalStyleBox"></div>
-    </details>
   </aside>
 
   <div class="stage">
@@ -131,7 +127,16 @@
 
   <aside class="panel" id="panel">
     <div class="panel-heading"><strong>属性检查器</strong><span>PROPERTIES</span></div>
-    <div id="panelContent"></div>
+    <div class="property-switch" role="group" aria-label="属性范围">
+      <button id="btnGlobalProps" type="button" aria-pressed="true" aria-controls="globalPanel">全局属性</button>
+      <button id="btnObjectProps" type="button" aria-pressed="false" aria-controls="panelContent">单个样式</button>
+    </div>
+    <section id="globalPanel" class="property-content" aria-label="全局属性">
+      <p class="property-caption">默认样式用于新建标注。测量比例按图片单独保存。</p>
+      <div id="presetBox"></div>
+      <div id="globalStyleBox"></div>
+    </section>
+    <section id="panelContent" class="property-content" aria-label="单个样式" hidden></section>
     <div class="layers-box">
       <div class="layers-head">
         <span class="layers-title">图层</span>

@@ -17,7 +17,7 @@
   const APP = {
     textProps: deepCopy(window.DEF_TEXT),
     shapeProps: deepCopy(window.DEF_SHAPE),
-    lineProps: { stroke: '#ff5252', width: 3, dash: null, haloColor: '#ffffff', haloWidth: 2 },
+    lineProps: { stroke: '#ff5252', width: 3, dash: null, haloColor: '#ffffff', haloWidth: 2, arrowStyle: 'solid' },
     calloutBg: deepCopy(window.DEF_BG),
     lens: { zoom: 2, radius: 90, side: 140, borderColor: '#ff5252', borderWidth: 3 },
     mosaic: { brush: 36, block: 10, eraser: false },
@@ -63,6 +63,45 @@
   };
   window.APP = APP;
 
+  Object.assign(F.Object.prototype, {
+    borderColor: '#5b8def',
+    cornerColor: '#5b8def',
+    cornerStrokeColor: '#ffffff',
+    cornerSize: 8,
+    touchCornerSize: 26,
+    cornerStyle: 'circle',
+    transparentCorners: false
+  });
+  F.Object.prototype.drawBorders = function (ctx, style = {}) {
+    const size = this._calculateCurrentDimensions();
+    const x = size.x / 2, y = size.y / 2;
+    const armX = Math.min(12, x / 2), armY = Math.min(12, y / 2);
+    ctx.save();
+    ctx.strokeStyle = style.borderColor || this.borderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        ctx.moveTo(sx * (x - armX), sy * y);
+        ctx.lineTo(sx * x, sy * y);
+        ctx.lineTo(sx * x, sy * (y - armY));
+      }
+    }
+    const rotate = this.controls.mtr;
+    if ((style.hasControls ?? this.hasControls) && rotate && this.isControlVisible('mtr')) {
+      ctx.moveTo(rotate.x * size.x, rotate.y * size.y);
+      ctx.lineTo(rotate.x * size.x + rotate.offsetX, rotate.y * size.y + rotate.offsetY);
+    }
+    ctx.stroke();
+    ctx.restore();
+    return this;
+  };
+  const renderGroupControls = F.ActiveSelection.prototype._renderControls;
+  F.ActiveSelection.prototype._renderControls = function (ctx, style) {
+    // The group frame is sufficient. Member frames otherwise overlap the active handles.
+    return renderGroupControls.call(this, ctx, style, { hasBorders: false });
+  };
+
   /* ---------- 画布（无限画布：固定视口 + 平移缩放） ---------- */
   const CV = window.CV = new F.Canvas(document.getElementById('c'), {
     enableRetinaScaling: false,
@@ -73,11 +112,7 @@
     selectionColor: 'rgba(91,141,239,0.25)',
     selectionBorderColor: '#5b8def',
     selectionLineWidth: 1,
-    cornerColor: '#5b8def',
-    cornerStrokeColor: '#ffffff',
-    cornerSize: 10,
-    cornerStyle: 'rect',
-    transparentCorners: false
+    targetFindTolerance: 3
   });
 
   function resizeCanvas() {
@@ -1241,6 +1276,26 @@
     s.appendChild(row('描边粗细', numField(target.haloWidth, { min: 0, max: 20, step: 1 }, v => apply('haloWidth', v))));
     return s;
   }
+  const ARROW_OPTIONS = [
+    ['实心三角', 'solid'], ['空心三角', 'hollow'], ['开放箭头', 'open'], ['实心菱形', 'diamond']
+  ];
+  const ARROW_TOOLS = new Set(['arrow', 'carrow', 'dim', 'ctext', 'cregion', 'cmulti']);
+  function arrowSection(obj) {
+    const s = sec('箭头');
+    const current = obj ? obj.arrowStyle : APP.lineProps.arrowStyle;
+    const field = selectField(ARROW_OPTIONS, F.ArrowStyles.includes(current) ? current : 'solid', value => {
+      if (obj) {
+        obj.arrowStyle = value;
+        applyRelayout(obj);
+        pushHistoryDebounced();
+      } else {
+        APP.lineProps.arrowStyle = value;
+        saveUserData();
+      }
+    });
+    s.appendChild(row('箭头样式', field));
+    return s;
+  }
   function contentSection(obj) {
     const s = sec('文字内容');
     const ta = el('textarea', 'ftextarea');
@@ -1373,7 +1428,9 @@
 
   function renderObjectPanel(p, obj) {
     const head = el('div', 'objhead');
-    head.appendChild(el('div', 'objname', OBJ_NAMES[obj.type] || obj.type));
+    const isArrow = obj.arrowhead === 'end';
+    const name = isArrow ? (obj.type === 'splinePath' ? '曲线箭头' : '箭头') : OBJ_NAMES[obj.type] || obj.type;
+    head.appendChild(el('div', 'objname', obj.type === 'activeSelection' ? '多个标注' : name));
     const acts = el('div', 'objacts');
     const bDup = el('button', 'btn small', '复制');
     bDup.onclick = duplicateSelection;
@@ -1404,14 +1461,13 @@
       return;
     }
 
-    p.appendChild(appearanceSection(obj));
+    if (F.hasArrowheads(obj)) p.appendChild(arrowSection(obj));
     const t = obj.type;
     if (t === 'annoText') {
       p.appendChild(contentSection(obj));
       p.appendChild(textSection(obj.tx, objTextApply(obj)));
     } else if (t === 'annoLine') {
       p.appendChild(lineSection(obj.line, objLineApply(obj)));
-      if (obj.arrowhead === 'end') p.appendChild(el('p', 'fnote', '箭头样式：实心箭头 + 白色描边'));
       if (obj.pts && obj.pts.length >= 2 && obj.pts.length <= 6) {
         p.appendChild(el('p', 'fnote', '选中后拖动蓝色圆点端点即可调整直线/箭头位置与方向。'));
       }
@@ -1464,17 +1520,7 @@
       p.appendChild(textSection(obj.tx, objTextApply(obj)));
       p.appendChild(lineSection(obj.line, objLineApply(obj)));
     } else if (t === 'dimension' || t === 'angleMeasure' || t === 'areaMeasure') {
-      if (t === 'dimension' || t === 'areaMeasure') {
-        const s = sec('测量比例');
-        s.appendChild(row('比例(px/单位)', numField(obj.scale, { min: 0.000000001, max: 100000000, step: 0.01 }, v => {
-          setMeasurementScale(v, APP.scale.unit, true);
-        })));
-        const u = el('input', 'itext');
-        u.value = obj.unit;
-        u.addEventListener('input', () => setMeasurementScale(APP.scale.pxPerUnit, u.value, true));
-        s.appendChild(row('单位名称', u));
-        p.appendChild(s);
-      }
+      if (t === 'dimension' || t === 'areaMeasure') p.appendChild(measureShortcut());
       p.appendChild(textSection(obj.tx, objTextApply(obj)));
       p.appendChild(lineSection(obj.line, objLineApply(obj)));
       if (t === 'areaMeasure') p.appendChild(shapeSection(obj.shape, objShapeApply(obj)));
@@ -1502,6 +1548,7 @@
     } else {
       p.appendChild(el('p', 'fnote', '该对象暂无更多可调属性。'));
     }
+    p.appendChild(appearanceSection(obj));
   }
 
   function measureSection() {
@@ -1526,6 +1573,17 @@
     });
     debounced ? pushHistoryDebounced() : pushHistory();
     return true;
+  }
+  function measureShortcut() {
+    const b = el('button', 'btn full', '设置本图测量比例');
+    b.onclick = () => {
+      showProperties('global');
+      const group = document.getElementById('measurementProperties');
+      group.open = true;
+      group.scrollIntoView({ block: 'nearest' });
+      group.firstElementChild.focus({ preventScroll: true });
+    };
+    return b;
   }
   function calloutBgSection() {
     const s = sec('文字框背景');
@@ -1643,27 +1701,28 @@
   function renderToolPanel(p, id) {
     const tp = APP.textProps, sp = APP.shapeProps, lp = APP.lineProps;
     const applyT = (k, v) => { tp[k] = v; saveUserData(); };
-    const applyS = (k, v) => { sp[k] = v; saveUserData(); };
+    const applyS = (k, v) => {
+      if (k in TOOLMGR.shapeOverrides) TOOLMGR.shapeOverrides[k] = v;
+      else { sp[k] = v; saveUserData(); }
+    };
+    const shapeTarget = { ...sp, ...TOOLMGR.shapeOverrides };
     const applyL = (k, v) => { lp[k === 'color' ? 'stroke' : k] = v; saveUserData(); };
     const lineTarget = () => ({ color: lp.stroke, width: lp.width, dash: lp.dash, haloColor: lp.haloColor, haloWidth: lp.haloWidth });
+    const tool = document.querySelector('.tool-btn[data-tool="' + id + '"]');
+    const title = tool ? tool.textContent.trim() : '两点比例标定';
+    p.appendChild(el('div', 'objhead objname', title));
+    p.appendChild(el('p', 'property-caption', id === 'calibrate' ? '在画布上点击已知距离的两端。' : '绘制前可调整当前工具使用的设置。'));
+    if (ARROW_TOOLS.has(id)) p.appendChild(arrowSection());
     switch (id) {
       case 'text':
         p.appendChild(textSection(tp, applyT));
         break;
       case 'rect':
-        p.appendChild(shapeSection({
-          stroke: sp.stroke, strokeWidth: sp.strokeWidth, dash: sp.dash,
-          cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
-          haloColor: sp.haloColor, haloWidth: sp.haloWidth
-        }, applyS));
+        p.appendChild(shapeSection(shapeTarget, applyS));
         break;
       case 'msgbox':
         p.appendChild(textSection(tp, applyT));
-        p.appendChild(shapeSection({
-          stroke: sp.stroke, strokeWidth: sp.strokeWidth, dash: sp.dash,
-          cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
-          haloColor: sp.haloColor, haloWidth: sp.haloWidth
-        }, applyS));
+        p.appendChild(shapeSection(shapeTarget, applyS));
         break;
       case 'step': {
         const s = sec('步骤序号');
@@ -1675,11 +1734,7 @@
         })));
         p.appendChild(s);
         p.appendChild(textSection(tp, applyT));
-        p.appendChild(shapeSection({
-          stroke: sp.stroke, strokeWidth: sp.strokeWidth, dash: sp.dash,
-          cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
-          haloColor: sp.haloColor, haloWidth: sp.haloWidth
-        }, applyS));
+        p.appendChild(shapeSection(shapeTarget, applyS));
         break;
       }
       case 'line': case 'arrow':
@@ -1694,7 +1749,7 @@
         p.appendChild(el('p', 'fnote', '画完后选中曲线，拖动蓝色圆点锚点可调整曲线形状。'));
         break;
       case 'dim':
-        p.appendChild(measureSection());
+        p.appendChild(measureShortcut());
         p.appendChild(textSection(tp, applyT));
         p.appendChild(lineSection(lineTarget(), applyL));
         break;
@@ -1703,13 +1758,9 @@
         p.appendChild(lineSection(lineTarget(), applyL));
         break;
       case 'area':
-        p.appendChild(measureSection());
+        p.appendChild(measureShortcut());
         p.appendChild(textSection(tp, applyT));
-        p.appendChild(shapeSection({
-          stroke: sp.stroke, strokeWidth: sp.strokeWidth, dash: sp.dash,
-          cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
-          haloColor: sp.haloColor, haloWidth: sp.haloWidth
-        }, applyS));
+        p.appendChild(shapeSection(shapeTarget, applyS));
         break;
       case 'ctext': case 'cmulti':
         p.appendChild(textSection(tp, applyT));
@@ -1718,11 +1769,7 @@
       case 'cregion':
         p.appendChild(textSection(tp, applyT));
         p.appendChild(lineSection(lineTarget(), applyL));
-        p.appendChild(shapeSection({
-          stroke: sp.stroke, strokeWidth: sp.strokeWidth, dash: sp.dash,
-          cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
-          haloColor: sp.haloColor, haloWidth: sp.haloWidth
-        }, applyS));
+        p.appendChild(shapeSection(shapeTarget, applyS));
         break;
       case 'cimage':
         p.appendChild(lineSection(lineTarget(), applyL));
@@ -1739,9 +1786,7 @@
     }
   }
 
-  function renderCanvasPanel(p) {
-    p.appendChild(el('h3', 'pnl-title', '画布'));
-    p.appendChild(measureSection());
+  function exportDefaultsSection() {
     const exp = sec('导出选项');
     exp.appendChild(row('分辨率', selectField([['1× 原尺寸', 1], ['0.5× 缩小', 0.5], ['2× 放大', 2]], APP.exportOpts.scale, v => {
       APP.exportOpts.scale = v;
@@ -1757,44 +1802,58 @@
       saveUserData();
     }));
     exp.appendChild(etg);
-    p.appendChild(exp);
-    const sh = sec('标注显示');
-    const tg = el('div', 'ftoggles');
-    tg.appendChild(checkField('新标注默认带阴影', APP.annoShadowOn, v => { APP.annoShadowOn = v; saveUserData(); }));
-    tg.appendChild(checkField('新标注默认白色描边', true, () => { toast('可在对应工具的样式面板中调整描边'); }));
-    sh.appendChild(tg);
-    p.appendChild(sh);
-    const s = sec('操作提示');
-    s.appendChild(el('p', 'fnote',
-      '• 上传图片后选择左侧工具进行标注\n' +
-      '• 选中对象后可在右侧调整样式（含阴影开关、白色描边）\n' +
-      '• 双击文字对象可快速编辑内容\n' +
-      '• Ctrl+Z 撤销 / Ctrl+Y 重做\n' +
-      '• Delete 删除选中 / Ctrl+D 复制\n' +
-      '• Esc 取消当前工具 / V 回到选择'));
-    p.appendChild(s);
-    if (!CV._baseImage) {
-      const up = el('button', 'btn primary full', '📤 上传图片开始标注');
-      up.onclick = () => document.getElementById('fileInput').click();
-      p.appendChild(up);
-    }
+    return exp;
   }
 
+  let propertyMode = 'global', propertyTarget = null;
+  const globalPanel = document.getElementById('globalPanel');
+  const objectPanel = document.getElementById('panelContent');
+  const globalPropsButton = document.getElementById('btnGlobalProps');
+  const objectPropsButton = document.getElementById('btnObjectProps');
+  globalPropsButton.onclick = () => showProperties('global');
+  objectPropsButton.onclick = () => showProperties('object');
+
+  function showProperties(mode) {
+    propertyMode = mode;
+    renderPanel();
+  }
   function renderPanel() {
-    const p = document.getElementById('panelContent');
-    p.innerHTML = '';
     const sel = CV.getActiveObject();
-    if (sel) { renderObjectPanel(p, sel); renderGlobalStyle(); return; }
-    if (TOOLMGR.current && TOOLMGR.current !== 'select') { renderToolPanel(p, TOOLMGR.current); renderGlobalStyle(); return; }
-    renderCanvasPanel(p);
-    renderGlobalStyle();
+    const tool = TOOLMGR.current !== 'select' ? TOOLMGR.current : null;
+    const target = sel || tool;
+    if (target !== propertyTarget) {
+      propertyTarget = target;
+      propertyMode = target ? 'object' : 'global';
+      objectPanel.scrollTop = 0;
+    }
+    const isGlobal = propertyMode === 'global';
+    globalPropsButton.setAttribute('aria-pressed', String(isGlobal));
+    objectPropsButton.setAttribute('aria-pressed', String(!isGlobal));
+    globalPanel.hidden = !isGlobal;
+    objectPanel.hidden = isGlobal;
+    if (isGlobal) {
+      renderGlobalStyle();
+    } else {
+      objectPanel.innerHTML = '';
+      if (sel) renderObjectPanel(objectPanel, sel);
+      else if (tool) renderToolPanel(objectPanel, tool);
+      else {
+        const empty = sec('尚未选择标注');
+        empty.appendChild(el('p', 'fnote', '点击画布上的标注或图层以编辑样式，也可以选择左侧工具来绘制。'));
+        objectPanel.appendChild(empty);
+      }
+    }
   }
 
   /* ---------- 提示 / Toast ---------- */
   function setHint(t) { document.getElementById('hint').textContent = t || ''; }
   function focusContent() {
+    if (propertyMode !== 'object') showProperties('object');
     const ta = document.getElementById('contentInput');
-    if (ta) { ta.focus(); ta.select(); }
+    if (ta) {
+      if (document.body.classList.contains('right-collapsed')) document.getElementById('btnPanel').click();
+      ta.focus(); ta.select();
+    }
   }
   let toastTimer = null;
   function toast(msg) {
@@ -1824,10 +1883,11 @@
 
   /* ---------- 画布事件 ---------- */
   CV.on('object:added', e => {
+    const o = e.target;
+    if (o && !isPinned(o)) o.perPixelTargetFind = true;
     if (APP.skipNextAdd) { APP.skipNextAdd = false; return; }
     if (APP.restoring) return;
-    if (e.target && e.target._temp) return;
-    const o = e.target;
+    if (o && o._temp) return;
     if (o && !isPinned(o)) {
       if (!o.shadow && APP.annoShadowOn) o.shadow = APP.annoShadow;
       if (!o.layerId) APP.assignAnnotationLayer(o);
@@ -2045,6 +2105,7 @@
       if (d.textProps) Object.assign(APP.textProps, d.textProps);
       if (d.shapeProps) Object.assign(APP.shapeProps, d.shapeProps);
       if (d.lineProps) Object.assign(APP.lineProps, d.lineProps);
+      if (!F.ArrowStyles.includes(APP.lineProps.arrowStyle)) APP.lineProps.arrowStyle = 'solid';
       if (d.calloutBg) Object.assign(APP.calloutBg, d.calloutBg);
       if (typeof d.annoShadowOn === 'boolean') APP.annoShadowOn = d.annoShadowOn;
       if (d.sticker) APP.sticker = d.sticker;
@@ -2060,7 +2121,7 @@
   /* ---------- 侧边栏：全局样式（默认样式 + 应用到已有标注） ---------- */
   function applyGlobalToAll() {
     flushHistory();
-    const objs = CV.getObjects().filter(o => !isPinned(o));
+    const objs = CV.getObjects().filter(o => !isPinned(o) && !o._temp);
     let count = 0;
     objs.forEach(o => {
       let changed = false;
@@ -2074,6 +2135,7 @@
         o.line.dash = APP.lineProps.dash ? APP.lineProps.dash.slice() : null;
         o.line.haloColor = APP.lineProps.haloColor;
         o.line.haloWidth = APP.lineProps.haloWidth;
+        if (F.hasArrowheads(o)) o.arrowStyle = APP.lineProps.arrowStyle;
         changed = true;
       }
       if (o.shape) {
@@ -2123,7 +2185,16 @@
   function renderGlobalStyle() {
     const box = document.getElementById('globalStyleBox');
     if (!box) return;
+    const openGroups = new Set(Array.from(box.querySelectorAll('details[open]'), group => group.id));
     box.innerHTML = '';
+    function appendGroup(id, title, section) {
+      const group = el('details', 'sec property-group');
+      group.id = id;
+      group.open = openGroups.has(id);
+      group.appendChild(el('summary', null, title));
+      group.appendChild(section);
+      box.appendChild(group);
+    }
     const tp = APP.textProps, sp = APP.shapeProps, lp = APP.lineProps;
     const save = () => saveUserData();
     const applyT = (k, v) => { tp[k] = v; save(); };
@@ -2131,25 +2202,26 @@
     // lineSection 的颜色字段使用键 'color'，而全局线条颜色存储在 lineProps.stroke 上
     // （对象上才是 line.color），这里统一映射，否则改颜色不生效
     const applyL = (k, v) => { lp[k === 'color' ? 'stroke' : k] = v; save(); };
-    box.appendChild(lineSection({
+    box.appendChild(el('div', 'property-group-title', '新标注默认样式'));
+    box.appendChild(arrowSection());
+    appendGroup('defaultLineProperties', '线条样式', lineSection({
       color: lp.stroke, width: lp.width, dash: lp.dash,
       haloColor: lp.haloColor, haloWidth: lp.haloWidth
     }, applyL));
-    box.appendChild(textSection(tp, applyT));
-    box.appendChild(shapeSection({
-      stroke: sp.stroke, strokeWidth: sp.strokeWidth, dash: sp.dash,
-      cornerRadius: sp.cornerRadius, fillColor: sp.fillColor, fillOpacity: sp.fillOpacity,
-      haloColor: sp.haloColor, haloWidth: sp.haloWidth
-    }, applyS));
-    const sh = sec('阴影');
-    const tg = el('div', 'ftoggles');
-    tg.appendChild(checkField('新标注默认带阴影', APP.annoShadowOn, v => { APP.annoShadowOn = v; save(); }));
-    sh.appendChild(tg);
+    appendGroup('defaultTextProperties', '文字样式', textSection(tp, applyT));
+    appendGroup('defaultShapeProperties', '图形样式', shapeSection(sp, applyS));
+    appendGroup('defaultBackgroundProperties', '引出文字背景', calloutBgSection());
+    appendGroup('defaultLensProperties', '放大镜', lensDefaultsSection());
+    const sh = sec('外观');
+    sh.appendChild(checkField('新标注默认带阴影', APP.annoShadowOn, v => { APP.annoShadowOn = v; save(); }));
     box.appendChild(sh);
-    const applyBtn = el('button', 'btn full', '🔄 应用到已有标注');
-    applyBtn.title = '将上方全局样式套用到画布上所有已有标注';
+    const applyBtn = el('button', 'btn full', '将样式应用到本图标注');
+    applyBtn.title = '统一当前图片的文字、线条、图形边框、箭头和阴影，可撤销';
     applyBtn.onclick = applyGlobalToAll;
     box.appendChild(applyBtn);
+    box.appendChild(el('div', 'property-group-title', '测量与导出'));
+    appendGroup('measurementProperties', '本图测量比例', measureSection());
+    appendGroup('exportProperties', '默认导出选项', exportDefaultsSection());
   }
 
   /* ---------- 无限画布：滚轮缩放 / 空格·中键平移 ---------- */
@@ -2178,7 +2250,20 @@
       cancelViewportAnim();
       panState = { sx: e.clientX, sy: e.clientY, vt: CV.viewportTransform.slice() };
       canvasEl.style.cursor = 'grabbing';
+      return;
     }
+    if (TOOLMGR.current !== 'select' || e.button !== 0 || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const pointer = CV.getPointer(e, true), active = CV.getActiveObject();
+    const matches = CV.getObjects().filter(o =>
+      o.selectable && !o._temp && !isPinned(o) && CV._searchPossibleTargets([o], pointer) === o
+    ).reverse();
+    if (matches.length < 2) return;
+    const next = matches[(matches.indexOf(active) + 1) % matches.length];
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    flushHistory();
+    CV.setActiveObject(next, e);
+    CV.requestRenderAll();
   }, true);
   window.addEventListener('mousemove', e => {
     if (!panState) return;
@@ -2197,7 +2282,8 @@
     return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
   };
   window.addEventListener('keydown', e => {
-    if (!e.isComposing && e.keyCode !== 229 && e.code === 'Space' && !e.repeat && !isTypingTarget(e)) {
+    if (!e.isComposing && e.keyCode !== 229 && e.code === 'Space' && !e.repeat && !isTypingTarget(e) &&
+        !e.target?.closest?.('.panel button, .panel summary')) {
       spaceDown = true;
       canvasEl.style.cursor = 'grab';
       e.preventDefault();

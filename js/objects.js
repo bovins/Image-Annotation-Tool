@@ -153,26 +153,6 @@
     drawFn();
     ctx.restore();
   }
-  // 填充图形双重描边：白色边框 + 彩色填充（用于箭头、圆点等实心图形）
-  function haloFill(ctx, s, drawFn) {
-    const color = s.color || s.stroke;
-    const haloColor = s.haloColor;
-    const haloWidth = s.haloWidth || 0;
-    ctx.save();
-    ctx.lineJoin = 'round';
-    if (haloWidth > 0 && haloColor) {
-      ctx.fillStyle = haloColor;
-      ctx.strokeStyle = haloColor;
-      ctx.lineWidth = haloWidth * 2;
-      drawFn();
-      ctx.fill();
-      ctx.stroke();
-    }
-    ctx.fillStyle = color || 'transparent';
-    drawFn();
-    ctx.fill();
-    ctx.restore();
-  }
   function fillStyle(ctx, s) {
     const o = s.fillOpacity || 0;
     if (o > 0) { ctx.fillStyle = s.fillColor || '#fff'; ctx.globalAlpha = clamp(o, 0, 1); }
@@ -186,12 +166,130 @@
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
-  function arrowHeadPath(tip, dirX, dirY, len, half) {
-    const nx = -dirY, ny = dirX;
+  F.ArrowStyles = Object.freeze(['solid', 'hollow', 'open', 'diamond']);
+  const alwaysHasArrowheads = new Set(['calloutText', 'calloutRegion', 'multiCallout', 'dimension']);
+  F.hasArrowheads = obj => obj.arrowhead === 'end' || alwaysHasArrowheads.has(obj.type);
+  function arrowStyle(value) {
+    return F.ArrowStyles.includes(value) ? value : 'solid';
+  }
+  function makeArrowHead(style, tip, ux, uy, len, half) {
+    const base = { x: tip.x - ux * len, y: tip.y - uy * len };
+    const diamond = style === 'diamond', wingOffset = diamond ? len / 2 : len;
+    const x = tip.x - ux * wingOffset, y = tip.y - uy * wingOffset;
     return {
-      x1: tip.x - dirX * len + nx * half, y1: tip.y - dirY * len + ny * half,
-      x2: tip.x - dirX * len - nx * half, y2: tip.y - dirY * len - ny * half
+      base,
+      path(ctx) {
+        ctx.moveTo(x - uy * half, y + ux * half);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.lineTo(x + uy * half, y - ux * half);
+        if (diamond) ctx.lineTo(base.x, base.y);
+        if (style !== 'open') ctx.closePath();
+      }
     };
+  }
+  function arrowMetrics(width, fullLength, fullHalf, distance) {
+    const len = Math.min(fullLength, distance * 0.56);
+    const shaftWidth = Math.min(width, distance * 0.26);
+    const half = Math.max(shaftWidth * 0.85, fullHalf * len / fullLength);
+    return { len, half, shaftWidth };
+  }
+  function clipOutsideHeads(ctx, traceHeads) {
+    // Anchors can move outside the object's bounds while dragging.
+    ctx.beginPath();
+    ctx.save();
+    ctx.resetTransform();
+    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    traceHeads();
+    ctx.clip('evenodd');
+  }
+  function drawLeaders(ctx, obj, tips, sourceX) {
+    const s = obj.line, y = obj.leaderY;
+    const style = obj.arrowStyle;
+    const width = Math.max(0, s.width || 0);
+    const fullLength = obj.arrowLen + width * 2;
+    const groups = new Map([[width, [ctx => {
+      ctx.moveTo(obj.x0, y);
+      ctx.lineTo(obj.x1, y);
+    }]]]);
+    const heads = [];
+    for (const tip of tips) {
+      const x = sourceX ?? clamp(tip.x, obj.x0, obj.x1);
+      const dx = tip.x - x, dy = tip.y - y, distance = Math.hypot(dx, dy);
+      if (!distance) continue;
+      const ux = dx / distance, uy = dy / distance;
+      const { len, half, shaftWidth } = arrowMetrics(width, fullLength, obj.arrowLen * 0.55, distance);
+      const head = makeArrowHead(style, tip, ux, uy, len, half);
+      const end = style === 'open' ? tip : head.base;
+      const overlap = style === 'diamond' ? len / 4 : 0;
+      if (!groups.has(shaftWidth)) groups.set(shaftWidth, []);
+      groups.get(shaftWidth).push(ctx => {
+        ctx.moveTo(x, y);
+        ctx.lineTo(end.x + ux * overlap, end.y + uy * overlap);
+      });
+      heads.push({ path: head.path, width: shaftWidth });
+    }
+    paintArrowPaths(ctx, s, style, groups, heads);
+  }
+
+  function paintArrowPaths(ctx, s, style, groups, heads) {
+    const dash = s.dash || [];
+    const filled = style === 'solid' || style === 'diamond';
+    if (style === 'open' && !dash.length) {
+      for (const head of heads) groups.get(head.width).push(head.path);
+      heads = [];
+    }
+    function paintLines(color, halo) {
+      ctx.strokeStyle = color;
+      ctx.setLineDash(dash);
+      groups.forEach((segments, width) => {
+        if (width + halo * 2 <= 0) return;
+        ctx.lineWidth = width + halo * 2;
+        ctx.beginPath();
+        segments.forEach(trace => trace(ctx));
+        ctx.stroke();
+      });
+    }
+    function paintHeads(color, halo) {
+      ctx.fillStyle = ctx.strokeStyle = color;
+      ctx.setLineDash([]);
+      for (const head of heads) {
+        ctx.beginPath();
+        head.path(ctx);
+        if (filled) ctx.fill();
+        const weight = (filled ? 0 : head.width) + halo * 2;
+        if (weight > 0) {
+          ctx.lineWidth = weight;
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.save();
+    ctx.lineCap = ctx.lineJoin = 'round';
+    const ink = s.color || 'transparent';
+    if (style === 'hollow') {
+      ctx.save();
+      for (const head of heads) clipOutsideHeads(ctx, () => head.path(ctx));
+    }
+    if (s.haloWidth > 0 && s.haloColor) {
+      paintLines(s.haloColor, s.haloWidth);
+      paintHeads(s.haloColor, s.haloWidth);
+    }
+    // Paint every outer edge before any foreground so adjacent parts share one outline.
+    paintLines(ink, 0);
+    if (style === 'hollow') ctx.restore();
+    paintHeads(ink, 0);
+    ctx.restore();
+  }
+  function drawBasicArrow(ctx, obj, head, width, traceShaft) {
+    if (!head) {
+      haloStroke(ctx, obj.line, () => {
+        ctx.beginPath(); traceShaft(ctx); ctx.stroke();
+      });
+      return;
+    }
+    const groups = new Map([[width, [traceShaft]]]);
+    paintArrowPaths(ctx, obj.line, obj.arrowStyle, groups, [{ path: head.path, width }]);
   }
 
   /* ---------- 内容坐标布局辅助 ----------
@@ -389,9 +487,7 @@
       this.pad = 8;
       this.arrowLen = 12;
       this.callSuper('initialize', opts);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
+      this.arrowStyle = arrowStyle(opts.arrowStyle);
       this.relayout();
       this._rebuildControls();
       this.objectCaching = false;
@@ -436,45 +532,14 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const a = this.anchor, s = this.line, ly = this.leaderY;
-      // 水平引出线（长度 = 文本长度 + 边距，文字放在线上方）
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(this.x0, ly);
-        ctx.lineTo(this.x1, ly);
-        ctx.stroke();
-      });
-      // 引出箭头线：从水平线最近点直连锚点（拖动文字时长度随之变化，非固定直角）
-      const px = clamp(a.x, this.x0, this.x1);
-      const dx = a.x - px, dy = a.y - ly;
-      const L = Math.hypot(dx, dy) || 1;
-      const ux = dx / L, uy = dy / L;
-      const hl = this.arrowLen + s.width * 2;
-      if (L > hl + 1) {
-        haloStroke(ctx, s, () => {
-          ctx.beginPath();
-          ctx.moveTo(px, ly);
-          ctx.lineTo(a.x - ux * hl, a.y - uy * hl);
-          ctx.stroke();
-        });
-      }
-      // 箭头（tip 指向锚点，方向沿引出线，白色边框 + 实心）
-      haloFill(ctx, s, () => {
-        const tip = { x: a.x, y: a.y };
-        const h = arrowHeadPath(tip, ux, uy, hl, this.arrowLen * 0.55);
-        ctx.beginPath();
-        ctx.moveTo(tip.x, tip.y);
-        ctx.lineTo(h.x1, h.y1);
-        ctx.lineTo(h.x2, h.y2);
-        ctx.closePath();
-      });
+      drawLeaders(ctx, this, [this.anchor]);
       // 文字（无方框，放在水平线上方）
       TX.draw(ctx, this.textContent, this.tx, this.textPos.x, this.textPos.y, 1e9);
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
-        textContent: this.textContent, tx: this.tx, line: this.line,
+        textContent: this.textContent, tx: this.tx, line: this.line, arrowStyle: this.arrowStyle,
         anchor: this.anchor, textPos: this.textPos
       });
     }
@@ -493,7 +558,7 @@
   function makeDraggableControl(getPoint, setPoint) {
     return new F.Control({
       x: 0, y: 0, offsetX: 0, offsetY: 0,
-      cornerSize: 20, touchCornerSize: 30,
+      sizeX: 14, sizeY: 14, touchSizeX: 26, touchSizeY: 26,
       cursorStyleHandler: () => 'move',
       // 增量式拖动：只按鼠标位移增量换算叠加；拖动期间冻结包围盒，其它点原地不动
       actionHandler: function (eventData, transform, x, y) {
@@ -533,9 +598,9 @@
         ctx.save();
         ctx.fillStyle = '#ffffff';
         ctx.strokeStyle = '#5b8def';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.arc(x, y, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         ctx.restore();
@@ -556,9 +621,7 @@
       this.pad = 8;
       this.arrowLen = 12;
       this.callSuper('initialize', opts);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
+      this.arrowStyle = arrowStyle(opts.arrowStyle);
       this.relayout();
       this._rebuildControls();
       this.objectCaching = false;
@@ -607,46 +670,14 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const s = this.line, ly = this.leaderY;
-      // 水平引出线（长度 = 文本长度 + 边距）
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(this.x0, ly);
-        ctx.lineTo(this.x1, ly);
-        ctx.stroke();
-      });
-      // 每个锚点：从水平线最近点直连锚点（实心箭头 + 白色边框）
-      const hl = this.arrowLen + s.width * 2;
-      for (const a of this.anchors) {
-        const px = clamp(a.x, this.x0, this.x1);
-        const dx = a.x - px, dy = a.y - ly;
-        const L = Math.hypot(dx, dy) || 1;
-        const ux = dx / L, uy = dy / L;
-        if (L > hl + 1) {
-          haloStroke(ctx, s, () => {
-            ctx.beginPath();
-            ctx.moveTo(px, ly);
-            ctx.lineTo(a.x - ux * hl, a.y - uy * hl);
-            ctx.stroke();
-          });
-        }
-        haloFill(ctx, s, () => {
-          const tip = { x: a.x, y: a.y };
-          const h = arrowHeadPath(tip, ux, uy, hl, this.arrowLen * 0.55);
-          ctx.beginPath();
-          ctx.moveTo(tip.x, tip.y);
-          ctx.lineTo(h.x1, h.y1);
-          ctx.lineTo(h.x2, h.y2);
-          ctx.closePath();
-        });
-      }
+      drawLeaders(ctx, this, this.anchors);
       // 文字（无方框，放在水平线上方）
       TX.draw(ctx, this.textContent, this.tx, this.textPos.x, this.textPos.y, 1e9);
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
-        textContent: this.textContent, tx: this.tx, line: this.line,
+        textContent: this.textContent, tx: this.tx, line: this.line, arrowStyle: this.arrowStyle,
         anchors: this.anchors, textPos: this.textPos
       });
     }
@@ -667,6 +698,47 @@
     return d;
   }
 
+  function leftCubicAxis(a, b, c, d, t) {
+    const ab = a + (b - a) * t, bc = b + (c - b) * t, cd = c + (d - c) * t;
+    const abc = ab + (bc - ab) * t, bcd = bc + (cd - bc) * t;
+    return [ab, abc, abc + (bcd - abc) * t];
+  }
+  function trimSplineTail(segs, index, start, tip, length) {
+    const [, c1x, c1y, c2x, c2y, endX, endY] = segs[index + 1];
+    let low = 0, high = 1;
+    const left = t => {
+      const x = leftCubicAxis(start.x, c1x, c2x, endX, t);
+      const y = leftCubicAxis(start.y, c1y, c2y, endY, t);
+      return ['C', x[0], y[0], x[1], y[1], x[2], y[2]];
+    };
+    // Split the original curve at the head base so the shaft keeps its shape up to the join.
+    for (let i = 0; i < 16; i++) {
+      const t = (low + high) / 2, part = left(t);
+      if (Math.hypot(tip.x - part[5], tip.y - part[6]) > length) low = t;
+      else high = t;
+    }
+    const part = left((low + high) / 2);
+    segs.splice(index + 1, segs.length - index - 1, part);
+    return { x: part[5], y: part[6] };
+  }
+  function splineArrow(obj, pts, segs) {
+    if (obj.arrowhead !== 'end') return {};
+    const tip = pts[pts.length - 1];
+    const distances = pts.map(p => Math.hypot(tip.x - p.x, tip.y - p.y));
+    const reach = distances.reduce((max, value) => Math.max(max, value), 0);
+    if (!reach) return {};
+    const style = obj.arrowStyle, open = style === 'open';
+    const { len, half, shaftWidth } = arrowMetrics(Math.max(0, obj.line.width || 0), obj.arrowLen, obj.arrowHalf, reach);
+    let index = pts.length - 2;
+    while (open ? distances[index] === 0 : distances[index] < len) index--;
+    const from = open ? pts[index] : trimSplineTail(segs, index, pts[index], tip, len);
+    const distance = Math.hypot(tip.x - from.x, tip.y - from.y);
+    const ux = (tip.x - from.x) / distance, uy = (tip.y - from.y) / distance;
+    const head = makeArrowHead(style, tip, ux, uy, open ? len : distance, half);
+    if (style === 'diamond') segs.push(['L', from.x + ux * distance / 4, from.y + uy * distance / 4]);
+    return { head, shaftWidth };
+  }
+
   F.SplinePath = F.util.createClass(F.Object, {
     type: 'splinePath',
     initialize(opts) {
@@ -677,9 +749,7 @@
       this.arrowLen = opts.arrowLen || 14;
       this.arrowHalf = opts.arrowHalf || 6;
       this.callSuper('initialize', opts);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
+      this.arrowStyle = arrowStyle(opts.arrowStyle);
       this._offX = 0; this._offY = 0;
       this.relayout();
       this._rebuildControls();
@@ -693,7 +763,7 @@
         left = Math.min(left, p.x); top = Math.min(top, p.y);
         right = Math.max(right, p.x); bottom = Math.max(bottom, p.y);
       }
-      const M = this.arrowhead === 'end' ? 22 : 8;
+      const M = this.arrowhead === 'end' ? Math.max(22, this.arrowLen, this.arrowHalf) : 8;
       left -= M; top -= M; right += M; bottom += M;
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
@@ -716,41 +786,25 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const pts = this.points, s = this.line;
+      const pts = this.points;
       if (pts.length >= 2) {
         const segs = F.util.parsePath(catmullRomPath(pts));
-        haloStroke(ctx, s, () => {
-          ctx.beginPath();
+        const { head, shaftWidth } = splineArrow(this, pts, segs);
+        drawBasicArrow(ctx, this, head, shaftWidth, ctx => {
           for (const seg of segs) {
             if (seg[0] === 'M') ctx.moveTo(seg[1], seg[2]);
             else if (seg[0] === 'C') ctx.bezierCurveTo(seg[1], seg[2], seg[3], seg[4], seg[5], seg[6]);
             else if (seg[0] === 'L') ctx.lineTo(seg[1], seg[2]);
           }
-          ctx.stroke();
         });
-        if (this.arrowhead === 'end') {
-          const tip = pts[pts.length - 1];
-          const prev = pts[pts.length - 2];
-          const dx = tip.x - prev.x, dy = tip.y - prev.y;
-          const L = Math.hypot(dx, dy) || 1;
-          const ux = dx / L, uy = dy / L;
-          const nx = -uy, ny = ux;
-          const b1 = { x: tip.x - ux * this.arrowLen + nx * this.arrowHalf, y: tip.y - uy * this.arrowLen + ny * this.arrowHalf };
-          const b2 = { x: tip.x - ux * this.arrowLen - nx * this.arrowHalf, y: tip.y - uy * this.arrowLen - ny * this.arrowHalf };
-          haloFill(ctx, s, () => {
-            ctx.beginPath();
-            ctx.moveTo(tip.x, tip.y);
-            ctx.lineTo(b1.x, b1.y);
-            ctx.lineTo(b2.x, b2.y);
-            ctx.closePath();
-          });
-        }
       }
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
-        points: this.points, arrowhead: this.arrowhead, line: this.line
+        points: this.points, arrowhead: this.arrowhead, line: this.line,
+        arrowStyle: this.arrowhead === 'end' ? this.arrowStyle : undefined,
+        arrowLen: this.arrowLen, arrowHalf: this.arrowHalf
       });
     }
   });
@@ -821,9 +875,7 @@
       this.pad = 8;
       this.arrowLen = 12;
       this.callSuper('initialize', opts);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
+      this.arrowStyle = arrowStyle(opts.arrowStyle);
       this.relayout();
       this._rebuildControls();
       this.objectCaching = false;
@@ -871,7 +923,7 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const e = this.ellipse, s = this.line, tp = this.textPos, sh = this.shape, ly = this.leaderY;
+      const e = this.ellipse, tp = this.textPos, sh = this.shape, ly = this.leaderY;
       // 区域（椭圆，半透明填充 + 描边）
       fillStyle(ctx, sh);
       ctx.beginPath(); ctx.ellipse(e.x, e.y, e.rx, e.ry, 0, 0, Math.PI * 2);
@@ -881,45 +933,16 @@
         ctx.beginPath(); ctx.ellipse(e.x, e.y, e.rx, e.ry, 0, 0, Math.PI * 2);
         ctx.stroke();
       });
-      // 水平引出线（长度 = 文本长度 + 边距，文字放在线上方）
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(this.x0, ly);
-        ctx.lineTo(this.x1, ly);
-        ctx.stroke();
-      });
       // 引出箭头线：从椭圆最近点直连水平线（拖动文字/区域时自动伸缩）
       const px = clamp(e.x, this.x0, this.x1);
-      const near = nearestEllipsePoint(e, px, ly);
-      const dx = near.x - px, dy = near.y - ly;
-      const L = Math.hypot(dx, dy) || 1;
-      const ux = dx / L, uy = dy / L;
-      const hl = this.arrowLen + s.width * 2;
-      if (L > hl + 1) {
-        haloStroke(ctx, s, () => {
-          ctx.beginPath();
-          ctx.moveTo(px, ly);
-          ctx.lineTo(near.x - ux * hl, near.y - uy * hl);
-          ctx.stroke();
-        });
-      }
-      // 箭头（tip 指向椭圆区域，方向沿引出线，白色边框 + 实心）
-      haloFill(ctx, s, () => {
-        const tip = { x: near.x, y: near.y };
-        const h = arrowHeadPath(tip, ux, uy, hl, this.arrowLen * 0.55);
-        ctx.beginPath();
-        ctx.moveTo(tip.x, tip.y);
-        ctx.lineTo(h.x1, h.y1);
-        ctx.lineTo(h.x2, h.y2);
-        ctx.closePath();
-      });
+      drawLeaders(ctx, this, [nearestEllipsePoint(e, px, ly)], px);
       // 文字（无方框，放在水平线上方）
       TX.draw(ctx, this.textContent, this.tx, tp.x, tp.y, 1e9);
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
-        textContent: this.textContent, tx: this.tx, line: this.line,
+        textContent: this.textContent, tx: this.tx, line: this.line, arrowStyle: this.arrowStyle,
         shape: this.shape, ellipse: this.ellipse, textPos: this.textPos
       });
     }
@@ -1021,6 +1044,7 @@
       this.scale = opts.scale != null ? opts.scale : 1;
       this.unit = opts.unit || '';
       this.callSuper('initialize', opts);
+      this.arrowStyle = arrowStyle(opts.arrowStyle);
       this.relayout();
     },
     label() {
@@ -1047,29 +1071,31 @@
       beginContent(ctx, this);
       const p1 = this.p1, p2 = this.p2;
       const dx = p2.x - p1.x, dy = p2.y - p1.y;
-      const L = Math.hypot(dx, dy) || 1;
-      const ux = dx / L, uy = dy / L;
+      const L = Math.hypot(dx, dy);
+      const ux = dx / (L || 1), uy = dy / (L || 1);
       const nx = -uy, ny = ux;
       const a1 = { x: p1.x + nx * this.offset, y: p1.y + ny * this.offset };
       const a2 = { x: p2.x + nx * this.offset, y: p2.y + ny * this.offset };
-      const s = this.line;
-      // 引出线 + 尺寸线
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y); ctx.lineTo(a1.x + nx * this.ext, a1.y + ny * this.ext);
-        ctx.moveTo(p2.x, p2.y); ctx.lineTo(a2.x + nx * this.ext, a2.y + ny * this.ext);
-        ctx.moveTo(a1.x, a1.y); ctx.lineTo(a2.x, a2.y);
-        ctx.stroke();
-      });
-      // 双箭头（实心 + 白色边框）
-      const hl = 9 + s.width, hh = 4 + s.width * 0.5;
-      const h1 = arrowHeadPath(a1, -ux, -uy, hl, hh);
-      const h2 = arrowHeadPath(a2, ux, uy, hl, hh);
-      haloFill(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(a1.x, a1.y); ctx.lineTo(h1.x1, h1.y1); ctx.lineTo(h1.x2, h1.y2); ctx.closePath();
-        ctx.moveTo(a2.x, a2.y); ctx.lineTo(h2.x1, h2.y1); ctx.lineTo(h2.x2, h2.y2); ctx.closePath();
-      });
+      if (L) {
+        const s = this.line, style = this.arrowStyle;
+        const width = Math.max(0, s.width || 0);
+        // Budget for both heads, including their rounded strokes, to leave a visible gap.
+        const { len, half, shaftWidth } = arrowMetrics(width, 9 + width, 4 + width / 2, L * 0.55);
+        const haloWidth = Math.min(s.haloWidth || 0, L / 16);
+        const heads = [
+          makeArrowHead(style, a1, -ux, -uy, len, half),
+          makeArrowHead(style, a2, ux, uy, len, half)
+        ];
+        const inset = style === 'open' ? 0 : len * (style === 'diamond' ? 0.75 : 1);
+        const trace = ctx => {
+          ctx.moveTo(p1.x, p1.y); ctx.lineTo(a1.x + nx * this.ext, a1.y + ny * this.ext);
+          ctx.moveTo(p2.x, p2.y); ctx.lineTo(a2.x + nx * this.ext, a2.y + ny * this.ext);
+          ctx.moveTo(a1.x + ux * inset, a1.y + uy * inset);
+          ctx.lineTo(a2.x - ux * inset, a2.y - uy * inset);
+        };
+        paintArrowPaths(ctx, { ...s, haloWidth }, style, new Map([[shaftWidth, [trace]]]),
+          heads.map(head => ({ path: head.path, width: shaftWidth })));
+      }
       const mid = { x: (a1.x + a2.x) / 2, y: (a1.y + a2.y) / 2 };
       const lp = { x: mid.x + nx * 4, y: mid.y + ny * 4 };
       const m = TX.measure(this.label(), this.tx, 400);
@@ -1079,7 +1105,7 @@
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
         p1: this.p1, p2: this.p2, offset: this.offset, ext: this.ext,
-        line: this.line, tx: this.tx, scale: this.scale, unit: this.unit
+        line: this.line, tx: this.tx, scale: this.scale, unit: this.unit, arrowStyle: this.arrowStyle
       });
     }
   });
@@ -1353,6 +1379,7 @@
       this.arrowLen = opts.arrowLen || 14;
       this.arrowHalf = opts.arrowHalf || 6;
       this.callSuper('initialize', opts);
+      this.arrowStyle = arrowStyle(opts.arrowStyle);
       this._offX = 0; this._offY = 0;
       this.relayout();
       // 直线/箭头等少量端点可拖动修改；手写（大量点）不生成手柄
@@ -1385,50 +1412,41 @@
         left = Math.min(left, p.x); top = Math.min(top, p.y);
         right = Math.max(right, p.x); bottom = Math.max(bottom, p.y);
       }
-      const M = (this.arrowhead === 'end' ? this.arrowLen : 0) + (this.line.haloWidth || 0) * 2 + 6;
+      const M = (this.arrowhead === 'end' ? Math.max(this.arrowLen, this.arrowHalf) : 0) + (this.line.haloWidth || 0) * 2 + 6;
       left -= M; top -= M; right += M; bottom += M;
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const s = this.line, pts = this.pts;
+      const pts = this.pts;
       if (pts.length >= 2) {
-        const isArrow = this.arrowhead === 'end';
         const tip = pts[pts.length - 1];
         const prev = pts[pts.length - 2];
-        let end = tip, dir = null;
-        if (isArrow) {
-          const dx = tip.x - prev.x, dy = tip.y - prev.y;
-          const L = Math.hypot(dx, dy) || 1;
-          dir = { x: dx / L, y: dy / L };
-          end = { x: tip.x - dir.x * this.arrowLen, y: tip.y - dir.y * this.arrowLen };
+        let head, width, end = tip;
+        if (this.arrowhead === 'end') {
+          const dx = tip.x - prev.x, dy = tip.y - prev.y, distance = Math.hypot(dx, dy);
+          if (distance) {
+            const { len, half, shaftWidth } = arrowMetrics(Math.max(0, this.line.width || 0), this.arrowLen, this.arrowHalf, distance);
+            const ux = dx / distance, uy = dy / distance, style = this.arrowStyle;
+            head = makeArrowHead(style, tip, ux, uy, len, half);
+            width = shaftWidth;
+            if (style === 'diamond') end = { x: tip.x - ux * len * 0.75, y: tip.y - uy * len * 0.75 };
+            else if (style !== 'open') end = head.base;
+          }
         }
-        haloStroke(ctx, s, () => {
-          ctx.beginPath();
+        drawBasicArrow(ctx, this, head, width, ctx => {
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length - 1; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.lineTo(end.x, end.y);
-          ctx.stroke();
         });
-        if (isArrow && dir) {
-          const hl = this.arrowLen, hh = this.arrowHalf;
-          const b1 = { x: tip.x - dir.x * hl + (-dir.y) * hh, y: tip.y - dir.y * hl + dir.x * hh };
-          const b2 = { x: tip.x - dir.x * hl - (-dir.y) * hh, y: tip.y - dir.y * hl - dir.x * hh };
-          haloFill(ctx, s, () => {
-            ctx.beginPath();
-            ctx.moveTo(tip.x, tip.y);
-            ctx.lineTo(b1.x, b1.y);
-            ctx.lineTo(b2.x, b2.y);
-            ctx.closePath();
-          });
-        }
       }
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
         pts: this.pts, arrowhead: this.arrowhead, line: this.line,
+        arrowStyle: this.arrowhead === 'end' ? this.arrowStyle : undefined,
         arrowLen: this.arrowLen, arrowHalf: this.arrowHalf
       });
     }

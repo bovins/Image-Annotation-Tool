@@ -279,7 +279,7 @@ const assert = require('assert/strict');
       const after = fabric.AnnotationGeometry.contentOrigin(b);
       const pasted = b.tx.fill === '#654321' && b.textContent === 'target';
       document.getElementById('presetSelect').value = '0';
-      document.querySelector('#efficiencyBox details button').click();
+      document.querySelector('#presetBox details button').click();
       return { before, after, pasted, defaults: APP.lineProps.width, font: APP.textProps.fontFamily };
     });
     assert.equal(result.pasted, true); assert.equal(result.defaults, 1); assert.equal(result.font, 'Arial');
@@ -442,7 +442,8 @@ const assert = require('assert/strict');
     assert.deepEqual(result, [1, 4096, 1, 4096, 1]);
   });
   await test('preset CRUD and actual JSON export/import preserve compatible user styles', async () => {
-    await page.locator('#efficiencyBox details').evaluate(e => { e.open = true; });
+    await page.locator('#btnGlobalProps').click();
+    await page.locator('#presetBox details').evaluate(e => { e.open = true; });
     await page.evaluate(() => { window._originalPrompt = window.prompt; window.prompt = () => 'Offline preset'; });
     await page.getByRole('button', { name: '新建预设', exact: true }).click();
     await page.selectOption('#presetSelect', { label: 'Offline preset' });
@@ -453,11 +454,11 @@ const assert = require('assert/strict');
     const data = JSON.parse(Buffer.concat(chunks).toString());
     assert.equal(data.presets.find(p => p.name === 'Offline preset').style.textProps.fontSize, 42);
     await page.selectOption('#presetSelect', { label: 'Offline preset' });
-    await page.locator('#efficiencyBox details').evaluate(e => { e.open = true; });
-    await page.locator('#efficiencyBox').getByRole('button', { name: '删除', exact: true }).click();
-    await page.locator('#efficiencyBox input[type=file]').setInputFiles({ name: 'presets.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(data)) });
+    await page.locator('#presetBox details').evaluate(e => { e.open = true; });
+    await page.locator('#presetBox').getByRole('button', { name: '删除', exact: true }).click();
+    await page.locator('#presetBox input[type=file]').setInputFiles({ name: 'presets.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(data)) });
     await page.waitForFunction(() => Array.from(document.getElementById('presetSelect').options).some(o => o.textContent === 'Offline preset'));
-    await page.locator('#efficiencyBox details').evaluate(e => { e.open = true; });
+    await page.locator('#presetBox details').evaluate(e => { e.open = true; });
     await page.selectOption('#presetSelect', { label: 'Offline preset' }); await page.getByRole('button', { name: '设为默认', exact: true }).click();
     assert.equal(await page.evaluate(() => APP.textProps.fontSize), 42);
     await page.evaluate(() => { window.prompt = window._originalPrompt; });
@@ -605,6 +606,337 @@ const assert = require('assert/strict');
     } finally {
       await page.evaluate(() => { HTMLCanvasElement.prototype.toBlob = window._originalToBlob; document.querySelector('.export-dialog').close(); });
     }
+  });
+  await test('right inspector switches scopes without changing canvas or overwriting defaults', async () => {
+    await upload(400, 300, 'arrow-styles.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'arrow-styles.png' && !APP.restoring);
+    await page.setViewportSize({ width: 1093, height: 614 });
+    const global = page.locator('#globalPanel'), local = page.locator('#panelContent');
+    const geometry = () => page.evaluate(() => {
+      const { x, y, width, height } = CV.upperCanvasEl.getBoundingClientRect();
+      return [x, y, width, height, ...CV.viewportTransform];
+    });
+    await page.waitForTimeout(350);
+    const before = await geometry();
+    await page.locator('#btnGlobalProps').focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Space');
+    assert.equal(await local.getByText('尚未选择标注').isVisible(), true);
+    assert.equal(await global.isVisible(), false);
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Enter');
+    await global.getByRole('combobox', { name: '箭头样式' }).selectOption({ label: '空心三角' });
+    assert.equal(await page.locator('.sidebar #presetBox, .sidebar #globalStyleBox').count(), 0);
+    const fill = await page.evaluate(() => APP.shapeProps.fillOpacity);
+    await page.locator('[data-tool="msgbox"]').click();
+    await page.locator('#btnGlobalProps').click();
+    assert.equal(await page.evaluate(() => APP.shapeProps.fillOpacity), fill);
+    assert.equal(await page.evaluate(() => TOOLMGR.shapeP().fillOpacity), 1);
+    await page.locator('[data-tool="arrow"]').click();
+    assert.equal(await local.getByRole('combobox', { name: '箭头样式' }).inputValue(), '"hollow"');
+    const box = await page.locator('.upper-canvas').boundingBox();
+    await page.mouse.move(box.x + box.width / 3, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(await page.evaluate(() => CV.getActiveObject().arrowStyle), 'hollow');
+    await local.getByRole('combobox', { name: '箭头样式' }).selectOption({ label: '实心菱形' });
+    const layerId = await page.evaluate(() => CV.getActiveObject().layerId);
+    await page.locator('#btnGlobalProps').click();
+    assert.equal(await global.getByRole('combobox', { name: '箭头样式' }).inputValue(), '"hollow"');
+    assert.equal(await page.evaluate(() => CV.getActiveObject().arrowStyle), 'diamond');
+    await page.locator('#btnObjectProps').click();
+    assert.equal(await local.getByRole('combobox', { name: '箭头样式' }).inputValue(), '"diamond"');
+    await page.evaluate(() => APP.undo());
+    await page.waitForFunction(id => !APP.restoring && CV.getObjects().some(o => o.layerId === id && o.arrowStyle === 'hollow'), layerId);
+    await page.evaluate(() => APP.redo());
+    await page.waitForFunction(id => !APP.restoring && CV.getObjects().some(o => o.layerId === id && o.arrowStyle === 'diamond'), layerId);
+    assert.deepEqual(await geometry(), before);
+    await page.setViewportSize({ width: 1366, height: 768 });
+  });
+  await test('four distinct arrowheads render and survive style transfer and project roundtrip', async () => {
+    const result = await page.evaluate(async () => {
+      CV.discardActiveObject();
+      const results = [];
+      for (const [Klass, pointsKey] of [[fabric.AnnoLine, 'pts'], [fabric.SplinePath, 'points']]) {
+        const options = { arrowhead: 'end', arrowLen: 36, arrowHalf: 15, line: { color: '#f02080', width: 2, haloWidth: 2 },
+          [pointsKey]: [{ x: 20, y: 60 }, { x: 100, y: 60 }] };
+        const arrow = new Klass(options);
+        arrow.set({ left: arrow._offX, top: arrow._offY });
+        CV.add(arrow);
+        const renderings = [];
+        for (const style of fabric.ArrowStyles) {
+          arrow.arrowStyle = style;
+          const canvas = ExportRenderer.render(CV, { range: 'custom', crop: { x: 10, y: 30, w: 110, h: 60 }, scale: 1 }, 'png');
+          const ctx = canvas.getContext('2d');
+          renderings.push({ png: canvas.toDataURL(), center: ctx.getImageData(66, 30, 1, 1).data[3] });
+        }
+        const legacy = Klass.fromObject(options);
+        const roundTrip = Klass.fromObject(JSON.parse(JSON.stringify(arrow.toObject())));
+        results.push({ count: new Set(renderings.map(r => r.png)).size, hollowCenter: renderings[1].center,
+          legacy: legacy.arrowStyle, roundTrip: roundTrip.arrowStyle, length: roundTrip.arrowLen });
+        CV.remove(arrow);
+      }
+      const source = new fabric.AnnoLine({ arrowhead: 'end', arrowStyle: 'open', pts: [{ x: 40, y: 100 }, { x: 100, y: 100 }] });
+      const target = new fabric.SplinePath({ arrowhead: 'end', points: [{ x: 40, y: 140 }, { x: 100, y: 140 }] });
+      const plain = new fabric.AnnoLine({ pts: [{ x: 40, y: 180 }, { x: 100, y: 180 }] });
+      CV.add(source, target, plain);
+      CV.setActiveObject(source); APP.copyStyle(); CV.setActiveObject(target); APP.pasteStyle();
+      const transferred = target.arrowStyle;
+      const oldDefault = APP.lineProps.arrowStyle;
+      document.getElementById('btnGlobalProps').click();
+      const field = document.querySelector('#globalPanel select[aria-label="箭头样式"]');
+      field.value = '"diamond"'; field.dispatchEvent(new Event('change'));
+      Array.from(document.querySelectorAll('#globalPanel button')).find(b => b.textContent === '将样式应用到本图标注').click();
+      const snapshot = APP.workspaceProject();
+      const current = snapshot.tabs[APP.activeTabIndex];
+      const { data } = await ProjectStore.prepare(current);
+      const persisted = data.objects.objects.find(o => o.layerId === target.layerId).arrowStyle;
+      APP.lineProps.arrowStyle = oldDefault;
+      return { results, transferred, persisted, defaultStyle: data.settings.lineProps.arrowStyle, plain: plain.arrowhead };
+    });
+    assert.deepEqual(result.results, Array(2).fill({ count: 4, hollowCenter: 0, legacy: 'solid', roundTrip: 'diamond', length: 36 }));
+    assert.equal(result.transferred, 'open');
+    assert.equal(result.persisted, 'diamond');
+    assert.equal(result.defaultStyle, 'diamond');
+    assert.equal(result.plain, 'none');
+  });
+  await test('leaders and dimensions expose all styles for every tip and keep their geometry', async () => {
+    await upload(400, 300, 'leader-styles.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'leader-styles.png' && !APP.restoring);
+    const result = await page.evaluate(async () => {
+      const p = (x, y) => ({ x, y });
+      const cases = [
+        ['ctext', fabric.CalloutText, { anchor: p(250, 150), textPos: p(130, 60) },
+          [p(250, 150)], () => TOOLMGR.startCtext(p(130, 60))],
+        ['cregion', fabric.CalloutRegion, { ellipse: { x: 260, y: 165, rx: 20, ry: 15 }, textPos: p(235, 60) },
+          [p(260, 150)], () => TOOLMGR.startCregion(p(130, 60))],
+        ['cmulti', fabric.MultiCallout, { anchors: [p(180, 150), p(285, 150)], textPos: p(215, 60) },
+          [p(180, 150), p(285, 150)], () => TOOLMGR.onCmultiDown(p(130, 60))],
+        ['dim', fabric.Dimension, { p1: p(140, 85), p2: p(300, 85), offset: 30, scale: 5, unit: 'mm' },
+          [p(140, 115), p(300, 115)], () => TOOLMGR.startDim(p(130, 60))]
+      ];
+      const selector = 'select[aria-label="箭头样式"]';
+      const field = scope => document.querySelector(scope + ' ' + selector);
+      const choose = (scope, style) => {
+        const select = field(scope);
+        select.value = JSON.stringify(style);
+        select.dispatchEvent(new Event('change'));
+      };
+      const results = [];
+      for (const [tool, Klass, options, tips, begin] of cases) {
+        TOOLMGR.select(tool);
+        choose('#panelContent', 'diamond');
+        begin();
+        const defaultStyle = TOOLMGR.state[tool].obj.arrowStyle;
+        TOOLMGR.select('select');
+        const line = { color: '#f02080', width: 2, haloColor: '#ffffff', haloWidth: 2 };
+        const annotation = new Klass({ ...options, line });
+        annotation.set({ left: annotation._offX, top: annotation._offY });
+        CV.add(annotation); CV.setActiveObject(annotation);
+        const legacy = JSON.parse(field('#panelContent').value);
+        const geometry = () => JSON.stringify([fabric.AnnotationGeometry.contentOrigin(annotation), annotation.label?.()]);
+        const before = geometry();
+        const crops = tips.map(() => new Set());
+        for (const style of fabric.ArrowStyles) {
+          choose('#panelContent', style);
+          tips.forEach(({ x, y }, i) => {
+            const crop = { x: x - 20, y: y - 20, w: 40, h: 40 };
+            crops[i].add(ExportRenderer.render(CV, { range: 'custom', crop, scale: 2 }, 'png').toDataURL());
+          });
+        }
+        APP.flushHistory();
+        const sameGeometry = geometry() === before;
+        results.push({ defaultStyle, legacy, sameGeometry, tipVariations: crops.map(c => c.size), layerId: annotation.layerId });
+        // Keep the completed annotation for the project roundtrip without covering the next fixture.
+        annotation.set('visible', false);
+      }
+      document.getElementById('btnGlobalProps').click();
+      choose('#globalPanel', 'open');
+      Array.from(document.querySelectorAll('#globalPanel button')).find(b => b.textContent === '将样式应用到本图标注').click();
+      const snapshot = APP.workspaceProject().tabs[APP.activeTabIndex];
+      await APP.importProject(snapshot);
+      const restored = results.map(r => CV.getObjects().find(o => o.layerId === r.layerId).arrowStyle);
+      return { results: results.map(({ layerId, ...r }) => r), restored };
+    });
+    assert.deepEqual(result.results, [[4], [4], [4, 4], [4, 4]].map(tipVariations => ({
+      defaultStyle: 'diamond', legacy: 'solid', sameGeometry: true, tipVariations
+    })));
+    assert.deepEqual(result.restored, ['open', 'open', 'open', 'open']);
+  });
+  await test('leader joints stay colored on the canvas and PNG, and short tips stay at their targets', async () => {
+    await upload(400, 300, 'leader-joints.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'leader-joints.png' && !APP.restoring);
+    const results = await page.evaluate(() => {
+      APP.annoShadowOn = false;
+      CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      const ux = 0.8, uy = 0.6;
+      const fixture = {
+        textContent: '引出', textPos: { x: 65, y: 55 },
+        tx: { ...DEF_TEXT, fill: '#254657' },
+        line: { color: '#ff5252', width: 3, haloColor: '#ffffff', haloWidth: 2 }
+      };
+      const isRed = (canvas, x, y, scale) => {
+        const [r, g, b, alpha] = canvas.getContext('2d').getImageData(Math.floor(x * scale), Math.floor(y * scale), 1, 1).data;
+        return r > 220 && g < 145 && b < 145 && alpha > 220;
+      };
+      const cases = [fabric.CalloutText, fabric.CalloutRegion, fabric.MultiCallout];
+      return cases.map(Klass => [80, 8].map(distance => {
+        const obj = new Klass(fixture);
+        const { x1, x0, leaderY } = obj;
+        const tip = { x: x1 + ux * distance, y: leaderY + uy * distance };
+        if (obj.type === 'calloutText') obj.anchor = tip;
+        if (obj.type === 'calloutRegion') {
+          obj.ellipse = { x: tip.x + 8 * ux, y: tip.y + 8 * uy, rx: 8, ry: 8 };
+          obj.shape = { ...DEF_SHAPE, stroke: '#254657', strokeWidth: 1, haloWidth: 0, fillOpacity: 0 };
+        }
+        if (obj.type === 'multiCallout') obj.anchors = [tip, { x: x0 - 50, y: leaderY + 50 }];
+        obj.relayout();
+        obj.set({ left: obj._offX, top: obj._offY });
+        CV.add(obj);
+        CV.renderAll();
+        const crop = { x: 0, y: 0, w: 400, h: 300 };
+        const png = ExportRenderer.render(CV, { range: 'custom', crop, scale: 4 }, 'png');
+        const checks = [CV.lowerCanvasEl, png].map((canvas, i) => {
+          const scale = i ? 4 : 1;
+          return distance === 80 ? [
+            isRed(canvas, x1 - 2, leaderY, scale),
+            isRed(canvas, tip.x - 19 * ux, tip.y - 19 * uy, scale)
+          ] : [
+            isRed(canvas, tip.x - 2 * ux, tip.y - 2 * uy, scale),
+            !isRed(canvas, tip.x - 14 * ux, tip.y - 14 * uy, scale)
+          ];
+        });
+        CV.remove(obj);
+        return checks;
+      }));
+    });
+    assert.deepEqual(results, Array.from({ length: 3 }, () => Array.from({ length: 2 }, () => [[true, true], [true, true]])));
+  });
+  await test('basic arrows keep a seamless shaft and scale short tips on the canvas and in PNG', async () => {
+    await upload(400, 300, 'basic-arrow-joints.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'basic-arrow-joints.png' && !APP.restoring);
+    const results = await page.evaluate(() => {
+      APP.annoShadowOn = false;
+      CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      const p = (x, y) => ({ x, y });
+      const cases = [
+        [fabric.AnnoLine, 'pts', [p(30, 50), p(150, 50)], p(127, 50)],
+        // The final anchor gap is shorter than the head, with a curved section earlier in the shaft.
+        [fabric.SplinePath, 'points', [p(25, 130), p(65, 80), p(95, 80), p(130, 80), p(134, 80)], p(111, 80)]
+      ];
+      const line = { color: '#ff5252', width: 3, haloColor: '#ffffff', haloWidth: 2 };
+      const crop = { x: 0, y: 0, w: 400, h: 300 };
+      const red = (canvas, point, scale) => {
+        const [r, g, b, a] = canvas.getContext('2d').getImageData(Math.floor(point.x * scale), Math.floor(point.y * scale), 1, 1).data;
+        return r > 220 && g < 145 && b < 145 && a > 220;
+      };
+      function check(Klass, key, points, ink, blank) {
+        const obj = new Klass({ arrowhead: 'end', arrowLen: 22, arrowHalf: 6, line, [key]: points });
+        obj.set({ left: obj._offX, top: obj._offY });
+        CV.add(obj); CV.renderAll();
+        const png = ExportRenderer.render(CV, { range: 'custom', crop, scale: 4 }, 'png');
+        const result = [CV.lowerCanvasEl, png].map((canvas, index) =>
+          ink.every(point => red(canvas, point, index ? 4 : 1)) &&
+          blank.every(point => !red(canvas, point, index ? 4 : 1))
+        );
+        CV.remove(obj);
+        return result;
+      }
+      return cases.map(([Klass, key, points, seam]) => {
+        const tip = points[points.length - 1];
+        return [
+          check(Klass, key, points, [seam, p(tip.x - 3, tip.y)], [p(tip.x + 2, tip.y)]),
+          check(Klass, key, [p(30, 50), p(38, 50)], [p(35, 50)], [p(21, 50), p(31, 48), p(40, 50)])
+        ];
+      });
+    });
+    assert.deepEqual(results, [[[true, true], [true, true]], [[true, true], [true, true]]]);
+  });
+  await test('pixel selection passes through empty bounds and Alt-click cycles overlapping ink', async () => {
+    await upload(400, 300, 'overlapping-annotations.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'overlapping-annotations.png' && !APP.restoring);
+    const [bottom, top] = await page.evaluate(() => {
+      TOOLMGR.select('select');
+      CV.setViewportTransform([1.6, 0, 0, 1.6, 20, 0]);
+      const line = { color: '#ff5252', width: 3, haloWidth: 0 };
+      const annotations = [
+        new fabric.AnnoLine({ pts: [{ x: 100, y: 175 }, { x: 255, y: 175 }], line }),
+        new fabric.AnnoLine({ pts: [{ x: 100, y: 100 }, { x: 240, y: 240 }], line })
+      ];
+      for (const o of annotations) {
+        o.set({ left: o._offX, top: o._offY });
+        CV.add(o);
+      }
+      CV.renderAll();
+      return annotations.map(o => o.layerId);
+    });
+    const canvas = await page.locator('.upper-canvas').boundingBox();
+    const click = (x, y) => page.mouse.click(canvas.x + x * 1.6 + 20, canvas.y + y * 1.6);
+    const active = () => page.evaluate(() => CV.getActiveObject()?.layerId);
+    await click(211, 175);
+    assert.equal(await active(), bottom);
+    await click(175, 175);
+    assert.equal(await active(), top);
+    await page.keyboard.down('Alt');
+    try {
+      await click(175, 175);
+      assert.equal(await active(), bottom);
+      await click(175, 175);
+      assert.equal(await active(), top);
+      await page.evaluate(id => {
+        const obj = CV.getObjects().find(o => o.layerId === id);
+        obj.set({ selectable: false, evented: false });
+      }, top);
+      await click(175, 175);
+      assert.equal(await active(), bottom);
+    } finally { await page.keyboard.up('Alt'); }
+  });
+  await test('dimension heads join the shaft and stay separate at short spans in the canvas and PNG', async () => {
+    await upload(400, 300, 'dimension-arrow-joints.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'dimension-arrow-joints.png' && !APP.restoring);
+    const results = await page.evaluate(async () => {
+      APP.annoShadowOn = false;
+      CV.setViewportTransform([4, 0, 0, 4, 0, 0]);
+      const line = { color: '#ff5252', width: 3, haloColor: '#ffffff', haloWidth: 2 };
+      const tx = { ...DEF_TEXT, fill: 'transparent', outlineWidth: 0 };
+      const crop = { x: 0, y: 0, w: 200, h: 75 };
+      const tests = [['solid', 128], ...fabric.ArrowStyles.map(style => [style, 14])];
+      const results = [];
+      for (const [style, span] of tests) {
+        const left = 34, right = left + span, y = 46;
+        const obj = new fabric.Dimension({ p1: { x: left, y: 20 }, p2: { x: right, y: 20 },
+          offset: 26, ext: 5, line, tx, arrowStyle: style });
+        obj.set({ left: obj._offX, top: obj._offY });
+        CV.add(obj); CV.renderAll();
+        const exported = ExportRenderer.render(CV, { range: 'custom', crop, scale: 4 }, 'png');
+        const png = await new Promise(resolve => exported.toBlob(resolve, 'image/png'));
+        const image = await createImageBitmap(png);
+        const decoded = document.createElement('canvas');
+        decoded.width = image.width; decoded.height = image.height;
+        decoded.getContext('2d').drawImage(image, 0, 0);
+        image.close();
+        const checks = [CV.lowerCanvasEl, decoded].map(canvas => {
+          const ctx = canvas.getContext('2d');
+          const sample = (x, y) => ctx.getImageData(Math.floor(x * 4), Math.floor(y * 4), 1, 1).data;
+          const red = (x, y) => {
+            const [r, g, b, a] = sample(x, y);
+            return r > 220 && g < 145 && b < 145 && a > 220;
+          };
+          const tips = red(left, y) && red(right, y) && !red(left - 2, y) && !red(right + 2, y);
+          if (span === 128) return tips && red(left + 13, y) && red(right - 13, y);
+          const wing = style === 'diamond' ? 2.15 : 3.9;
+          return tips && sample(left + wing, y + 2.5)[3] > 120 &&
+            sample(right - wing, y + 2.5)[3] > 120 &&
+            sample(left + span / 2, y + 2.5)[3] === 0;
+        });
+        results.push({ style, span, checks, label: obj.label() });
+        CV.remove(obj);
+      }
+      return results;
+    });
+    assert.deepEqual(results, [['solid', 128], ...['solid', 'hollow', 'open', 'diamond'].map(style => [style, 14])]
+      .map(([style, span]) => ({ style, span, checks: [true, true], label: span + ' px' })));
   });
   await test('no browser exceptions', () => assert.deepEqual(errors, []));
   await browser.close();
