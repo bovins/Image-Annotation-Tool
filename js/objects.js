@@ -207,13 +207,11 @@
       }
     };
   }
-  function arrowTip(obj, tip, prev, limitToSegment = false) {
-    if (obj.arrowhead !== 'end') return null;
-    const dx = tip.x - prev.x, dy = tip.y - prev.y, distance = Math.hypot(dx, dy);
-    if (!distance) return null;
-    const len = limitToSegment ? Math.min(obj.arrowLen, distance) : obj.arrowLen;
-    const half = obj.arrowHalf * len / obj.arrowLen;
-    return makeArrowHead(obj.arrowStyle, tip, dx / distance, dy / distance, len, half);
+  function arrowMetrics(width, fullLength, fullHalf, distance) {
+    const len = Math.min(fullLength, distance * 0.56);
+    const shaftWidth = Math.min(width, distance * 0.26);
+    const half = Math.max(shaftWidth * 0.85, fullHalf * len / fullLength);
+    return { len, half, shaftWidth };
   }
   function drawArrowLine(ctx, obj, heads, shaft) {
     const s = obj.line;
@@ -250,8 +248,7 @@
   function drawLeaders(ctx, obj, tips, sourceX) {
     const s = obj.line, y = obj.leaderY;
     const style = obj.arrowStyle;
-    const filled = style === 'solid' || style === 'diamond';
-    const width = Math.max(0, s.width || 0), dash = s.dash || [];
+    const width = Math.max(0, s.width || 0);
     const fullLength = obj.arrowLen + width * 2;
     const groups = new Map([[width, [ctx => {
       ctx.moveTo(obj.x0, y);
@@ -263,9 +260,7 @@
       const dx = tip.x - x, dy = tip.y - y, distance = Math.hypot(dx, dy);
       if (!distance) continue;
       const ux = dx / distance, uy = dy / distance;
-      const len = Math.min(fullLength, distance * 0.56);
-      const shaftWidth = Math.min(width, distance * 0.26);
-      const half = Math.max(shaftWidth * 0.85, obj.arrowLen * 0.55 * len / fullLength);
+      const { len, half, shaftWidth } = arrowMetrics(width, fullLength, obj.arrowLen * 0.55, distance);
       const head = makeArrowHead(style, tip, ux, uy, len, half);
       const end = style === 'open' ? tip : head.base;
       const overlap = style === 'diamond' ? len / 4 : 0;
@@ -274,10 +269,18 @@
         ctx.moveTo(x, y);
         ctx.lineTo(end.x + ux * overlap, end.y + uy * overlap);
       });
-      if (style === 'open' && !dash.length) groups.get(shaftWidth).push(head.path);
-      else heads.push({ path: head.path, width: shaftWidth });
+      heads.push({ path: head.path, width: shaftWidth });
     }
+    paintArrowPaths(ctx, s, style, groups, heads);
+  }
 
+  function paintArrowPaths(ctx, s, style, groups, heads) {
+    const dash = s.dash || [];
+    const filled = style === 'solid' || style === 'diamond';
+    if (style === 'open' && !dash.length) {
+      for (const head of heads) groups.get(head.width).push(head.path);
+      heads = [];
+    }
     function paintLines(color, halo) {
       ctx.strokeStyle = color;
       ctx.setLineDash(dash);
@@ -319,6 +322,16 @@
     if (style === 'hollow') ctx.restore();
     paintHeads(ink, 0);
     ctx.restore();
+  }
+  function drawBasicArrow(ctx, obj, head, width, traceShaft) {
+    if (!head) {
+      haloStroke(ctx, obj.line, () => {
+        ctx.beginPath(); traceShaft(ctx); ctx.stroke();
+      });
+      return;
+    }
+    const groups = new Map([[width, [traceShaft]]]);
+    paintArrowPaths(ctx, obj.line, obj.arrowStyle, groups, [{ path: head.path, width }]);
   }
 
   /* ---------- 内容坐标布局辅助 ----------
@@ -727,6 +740,47 @@
     return d;
   }
 
+  function leftCubicAxis(a, b, c, d, t) {
+    const ab = a + (b - a) * t, bc = b + (c - b) * t, cd = c + (d - c) * t;
+    const abc = ab + (bc - ab) * t, bcd = bc + (cd - bc) * t;
+    return [ab, abc, abc + (bcd - abc) * t];
+  }
+  function trimSplineTail(segs, index, start, tip, length) {
+    const [, c1x, c1y, c2x, c2y, endX, endY] = segs[index + 1];
+    let low = 0, high = 1;
+    const left = t => {
+      const x = leftCubicAxis(start.x, c1x, c2x, endX, t);
+      const y = leftCubicAxis(start.y, c1y, c2y, endY, t);
+      return ['C', x[0], y[0], x[1], y[1], x[2], y[2]];
+    };
+    // Split the original curve at the head base so the shaft keeps its shape up to the join.
+    for (let i = 0; i < 16; i++) {
+      const t = (low + high) / 2, part = left(t);
+      if (Math.hypot(tip.x - part[5], tip.y - part[6]) > length) low = t;
+      else high = t;
+    }
+    const part = left((low + high) / 2);
+    segs.splice(index + 1, segs.length - index - 1, part);
+    return { x: part[5], y: part[6] };
+  }
+  function splineArrow(obj, pts, segs) {
+    if (obj.arrowhead !== 'end') return {};
+    const tip = pts[pts.length - 1];
+    const distances = pts.map(p => Math.hypot(tip.x - p.x, tip.y - p.y));
+    const reach = distances.reduce((max, value) => Math.max(max, value), 0);
+    if (!reach) return {};
+    const style = obj.arrowStyle, open = style === 'open';
+    const { len, half, shaftWidth } = arrowMetrics(Math.max(0, obj.line.width || 0), obj.arrowLen, obj.arrowHalf, reach);
+    let index = pts.length - 2;
+    while (open ? distances[index] === 0 : distances[index] < len) index--;
+    const from = open ? pts[index] : trimSplineTail(segs, index, pts[index], tip, len);
+    const distance = Math.hypot(tip.x - from.x, tip.y - from.y);
+    const ux = (tip.x - from.x) / distance, uy = (tip.y - from.y) / distance;
+    const head = makeArrowHead(style, tip, ux, uy, open ? len : distance, half);
+    if (style === 'diamond') segs.push(['L', from.x + ux * distance / 4, from.y + uy * distance / 4]);
+    return { head, shaftWidth };
+  }
+
   F.SplinePath = F.util.createClass(F.Object, {
     type: 'splinePath',
     initialize(opts) {
@@ -777,15 +831,13 @@
       const pts = this.points;
       if (pts.length >= 2) {
         const segs = F.util.parsePath(catmullRomPath(pts));
-        const head = arrowTip(this, pts[pts.length - 1], pts[pts.length - 2]);
-        drawArrowLine(ctx, this, head ? [head] : [], () => {
-          ctx.beginPath();
+        const { head, shaftWidth } = splineArrow(this, pts, segs);
+        drawBasicArrow(ctx, this, head, shaftWidth, ctx => {
           for (const seg of segs) {
             if (seg[0] === 'M') ctx.moveTo(seg[1], seg[2]);
             else if (seg[0] === 'C') ctx.bezierCurveTo(seg[1], seg[2], seg[3], seg[4], seg[5], seg[6]);
             else if (seg[0] === 'L') ctx.lineTo(seg[1], seg[2]);
           }
-          ctx.stroke();
         });
       }
       endContent(ctx);
@@ -1409,14 +1461,22 @@
       if (pts.length >= 2) {
         const tip = pts[pts.length - 1];
         const prev = pts[pts.length - 2];
-        const head = arrowTip(this, tip, prev, true);
-        const end = head && this.arrowStyle !== 'open' ? head.base : tip;
-        drawArrowLine(ctx, this, head ? [head] : [], () => {
-          ctx.beginPath();
+        let head, width, end = tip;
+        if (this.arrowhead === 'end') {
+          const dx = tip.x - prev.x, dy = tip.y - prev.y, distance = Math.hypot(dx, dy);
+          if (distance) {
+            const { len, half, shaftWidth } = arrowMetrics(Math.max(0, this.line.width || 0), this.arrowLen, this.arrowHalf, distance);
+            const ux = dx / distance, uy = dy / distance, style = this.arrowStyle;
+            head = makeArrowHead(style, tip, ux, uy, len, half);
+            width = shaftWidth;
+            if (style === 'diamond') end = { x: tip.x - ux * len * 0.75, y: tip.y - uy * len * 0.75 };
+            else if (style !== 'open') end = head.base;
+          }
+        }
+        drawBasicArrow(ctx, this, head, width, ctx => {
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length - 1; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.lineTo(end.x, end.y);
-          ctx.stroke();
         });
       }
       endContent(ctx);

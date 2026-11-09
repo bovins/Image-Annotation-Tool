@@ -813,6 +813,46 @@ const assert = require('assert/strict');
     });
     assert.deepEqual(results, Array.from({ length: 3 }, () => Array.from({ length: 2 }, () => [[true, true], [true, true]])));
   });
+  await test('basic arrows keep a seamless shaft and scale short tips on the canvas and in PNG', async () => {
+    await upload(400, 300, 'basic-arrow-joints.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'basic-arrow-joints.png' && !APP.restoring);
+    const results = await page.evaluate(() => {
+      APP.annoShadowOn = false;
+      CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      const p = (x, y) => ({ x, y });
+      const cases = [
+        [fabric.AnnoLine, 'pts', [p(30, 50), p(150, 50)], p(127, 50)],
+        // The final anchor gap is shorter than the head, with a curved section earlier in the shaft.
+        [fabric.SplinePath, 'points', [p(25, 130), p(65, 80), p(95, 80), p(130, 80), p(134, 80)], p(111, 80)]
+      ];
+      const line = { color: '#ff5252', width: 3, haloColor: '#ffffff', haloWidth: 2 };
+      const crop = { x: 0, y: 0, w: 400, h: 300 };
+      const red = (canvas, point, scale) => {
+        const [r, g, b, a] = canvas.getContext('2d').getImageData(Math.floor(point.x * scale), Math.floor(point.y * scale), 1, 1).data;
+        return r > 220 && g < 145 && b < 145 && a > 220;
+      };
+      function check(Klass, key, points, ink, blank) {
+        const obj = new Klass({ arrowhead: 'end', arrowLen: 22, arrowHalf: 6, line, [key]: points });
+        obj.set({ left: obj._offX, top: obj._offY });
+        CV.add(obj); CV.renderAll();
+        const png = ExportRenderer.render(CV, { range: 'custom', crop, scale: 4 }, 'png');
+        const result = [CV.lowerCanvasEl, png].map((canvas, index) =>
+          ink.every(point => red(canvas, point, index ? 4 : 1)) &&
+          blank.every(point => !red(canvas, point, index ? 4 : 1))
+        );
+        CV.remove(obj);
+        return result;
+      }
+      return cases.map(([Klass, key, points, seam]) => {
+        const tip = points[points.length - 1];
+        return [
+          check(Klass, key, points, [seam, p(tip.x - 3, tip.y)], [p(tip.x + 2, tip.y)]),
+          check(Klass, key, [p(30, 50), p(38, 50)], [p(35, 50)], [p(21, 50), p(31, 48), p(40, 50)])
+        ];
+      });
+    });
+    assert.deepEqual(results, [[[true, true], [true, true]], [[true, true], [true, true]]]);
+  });
   await test('pixel selection passes through empty bounds and Alt-click cycles overlapping ink', async () => {
     await upload(400, 300, 'overlapping-annotations.png');
     await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'overlapping-annotations.png' && !APP.restoring);
