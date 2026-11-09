@@ -89,7 +89,7 @@
     state: {},
     temp: [],
     phaseHint: '',
-    _savedSP: null,
+    shapeOverrides: {},
 
     init(cv) {
       this.cv = cv;
@@ -99,27 +99,13 @@
     select(id) {
       if (this.current === id) return;
       this.cancelAction();
-      // 工具级图形默认值：进入工具时套用该工具的默认填充，离开时还原
-      const sp = window.APP ? window.APP.shapeProps : null;
-      if (sp) {
-        if (this._savedSP) {
-          Object.assign(sp, this._savedSP);
-          this._savedSP = null;
-        }
-        if (id === 'msgbox') {
-          this._savedSP = { fillColor: sp.fillColor, fillOpacity: sp.fillOpacity, cornerRadius: sp.cornerRadius };
-          sp.fillColor = '#ffffff'; sp.fillOpacity = 1; sp.cornerRadius = 8;
-        } else if (id === 'step') {
-          this._savedSP = { fillColor: sp.fillColor, fillOpacity: sp.fillOpacity };
-          sp.fillColor = '#ffffff'; sp.fillOpacity = 1;
-        } else if (id === 'area') {
-          this._savedSP = { fillColor: sp.fillColor, fillOpacity: sp.fillOpacity };
-          sp.fillColor = '#4c8dff'; sp.fillOpacity = 0.25;
-        } else if (id === 'cregion') {
-          this._savedSP = { fillColor: sp.fillColor, fillOpacity: sp.fillOpacity };
-          sp.fillColor = '#ffffff'; sp.fillOpacity = 0.35;
-        }
-      }
+      // Keep tool-specific fill defaults separate from the global preferences.
+      this.shapeOverrides = {
+        msgbox: { fillColor: '#ffffff', fillOpacity: 1, cornerRadius: 8 },
+        step: { fillColor: '#ffffff', fillOpacity: 1 },
+        area: { fillColor: '#4c8dff', fillOpacity: 0.25 },
+        cregion: { fillColor: '#ffffff', fillOpacity: 0.35 }
+      }[id] || {};
       this.current = id;
       document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === id));
       const drawing = id !== 'select';
@@ -245,7 +231,7 @@
     },
     textP() { return Object.assign({}, this.props().textProps); },
     shapeP() {
-      const s = this.props().shapeProps;
+      const s = { ...this.props().shapeProps, ...this.shapeOverrides };
       const p = {
         stroke: s.stroke, strokeWidth: s.strokeWidth,
         dash: s.dash ? s.dash.slice() : null,
@@ -510,12 +496,13 @@
       this.done(st.obj);
     },
 
-    /* ---------- 直线 / 箭头 / 手写（AnnoLine：白色边框 + 实心箭头） ---------- */
+    /* ---------- 直线 / 箭头 / 手写 ---------- */
     startLine(p) {
       const obj = new F.AnnoLine({
         left: 0, top: 0,
         pts: [{ x: p.x, y: p.y }, { x: p.x, y: p.y }],
         arrowhead: this.current === 'arrow' ? 'end' : 'none',
+        arrowStyle: this.props().lineProps.arrowStyle,
         arrowLen: this.sz(14), arrowHalf: this.sz(6),
         line: this.lineP(),
         minScaleLimit: 0.1
@@ -543,6 +530,7 @@
         left: 0, top: 0,
         points: [{ x: p.x, y: p.y }],
         arrowhead: this.current === 'carrow' ? 'end' : 'none',
+        arrowStyle: this.props().lineProps.arrowStyle,
         arrowLen: this.sz(14),
         arrowHalf: this.sz(6),
         line: this.lineP(),

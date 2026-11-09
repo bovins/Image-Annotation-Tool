@@ -26,7 +26,8 @@ const path = require('path');
     const dimension = new fabric.Dimension({ p1: { x: 210, y: 260 }, p2: { x: 640, y: 260 }, offset: -70, scale: 5, unit: 'mm', line: { color: '#334155', width: 2, haloWidth: 0 }, tx: { fill: '#334155', fontSize: 24 } });
     // A positive offset is used below the housing, keeping the measured endpoints explicit.
     dimension.offset = 220; dimension.relayout(); dimension.set({ left: dimension._offX, top: dimension._offY }); CV.add(dimension);
-    const arrow = new fabric.AnnoLine({ pts: [{ x: 850, y: 205 }, { x: 770, y: 300 }], arrowhead: 'end', line: { color: '#ef4444', width: 4, haloWidth: 1 } });
+    const arrow = new fabric.AnnoLine({ pts: [{ x: 850, y: 205 }, { x: 770, y: 300 }], arrowhead: 'end',
+      arrowStyle: 'open', arrowLen: 28, arrowHalf: 10, line: { color: '#ef4444', width: 4, haloColor: '#ffffff', haloWidth: 1 } });
     arrow.set({ left: arrow._offX, top: arrow._offY }); CV.add(arrow);
     CV.add(new fabric.AnnoText({ textContent: '检查密封与行程', left: 660, top: 155, tx: { fill: '#ef4444', fontSize: 28, fontWeight: 'bold' } }));
     CV.add(new fabric.StepNumber({ left: 180, top: 220, number: 1, radius: 20, tx: { fill: '#ef4444' } }));
@@ -36,10 +37,13 @@ const path = require('path');
     document.querySelector('.tool-category').open = true;
   });
   await page.waitForTimeout(350);
+  await page.locator('#toast.show').waitFor({ state: 'detached' });
   console.log(await page.evaluate(() => ({ scale: APP.scale, restoring: APP.restoring, history: APP.__hist.undo.length, layers: APP.layers.length })));
   await page.screenshot({ path: 'docs/editor-current.png' });
   await page.locator('#btnTheme').click(); await page.waitForTimeout(250);
+  await page.evaluate(() => { CV.setActiveObject(CV.getObjects().find(o => o.arrowhead === 'end')); CV.requestRenderAll(); });
   await page.screenshot({ path: 'docs/editor-light.png' });
+  await page.evaluate(() => { CV.discardActiveObject(); CV.requestRenderAll(); });
   await page.locator('#btnExport').click(); await page.waitForFunction(() => document.querySelector('.export-preview canvas'));
   await page.screenshot({ path: 'docs/export-preview.png' });
   console.log('Screenshots: Edge ' + browser.version() + ', 1366x768, file://');

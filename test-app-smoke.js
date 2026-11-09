@@ -83,6 +83,7 @@ const docStub = {
   },
   createElementNS: () => makeEl('svg'),
   getElementById: (id) => els[id] || (els[id] = makeEl(id)),
+  querySelector: () => null,
   querySelectorAll: () => [],
   addEventListener(ev, fn) { (docListeners[ev] = docListeners[ev] || []).push(fn); },
   removeEventListener(ev, fn) { const a = docListeners[ev]; if (a) { const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } },
@@ -362,7 +363,7 @@ function check(name, cond) {
     if (!e) return;
     if (e.className === 'sec' && e.children[0] && e.children[0].textContent === '导出选项') exportSec = e;
     (e.children || []).forEach(walk);
-  })(els.panelContent);
+  })(els.globalStyleBox);
   let scaleSel = null, jpgRange = null, includeCheck = null;
   (function collect(e) {
     if (!e) return;

@@ -36,6 +36,7 @@
           if (value.length > 20 || value.some(n => !Number.isFinite(n) || n < 0 || n > 4096)) throw new Error('线形无效');
         } else if (typeof value !== 'boolean' && value !== null) throw new Error('样式字段类型无效');
         if (model !== null && typeof model !== typeof value) throw new Error('样式字段类型不匹配：' + key);
+        if (key === 'arrowStyle' && !F.ArrowStyles.includes(value)) throw new Error('箭头样式无效');
         result[section][key] = copy(value);
       });
     });
@@ -69,6 +70,7 @@
         const p = valid.lineProps;
         if (p.stroke != null) o.line.color = p.stroke;
         ['width', 'dash', 'haloColor', 'haloWidth'].forEach(k => { if (k in p) o.line[k] = copy(p[k]); });
+        if (o.arrowhead === 'end' && p.arrowStyle) o.arrowStyle = p.arrowStyle;
       }
       if (['line', 'path'].includes(o.type) && valid.lineProps) {
         const p = valid.lineProps;
@@ -94,6 +96,7 @@
     if (o.shape) clipboard.shapeProps = copy(o.shape);
     if (o.bg) clipboard.calloutBg = copy(o.bg);
     if (o.line) clipboard.lineProps = { stroke: o.line.color, width: o.line.width, dash: o.line.dash, haloColor: o.line.haloColor, haloWidth: o.line.haloWidth };
+    if (o.line && o.arrowhead === 'end') clipboard.lineProps.arrowStyle = o.arrowStyle;
     if (['line', 'path'].includes(o.type)) clipboard.lineProps = { stroke: o.stroke, width: o.strokeWidth, dash: o.strokeDashArray };
     if (o.type === 'rect') clipboard.shapeProps = { stroke: o.stroke, strokeWidth: o.strokeWidth };
     clipboard.shadow = !!o.shadow; A.toast('样式已复制（不含位置、内容和图片）');
@@ -108,17 +111,21 @@
     input.onchange = () => { A[key] = input.checked; store('anno-efficiency', { continuous: A.continuous, snapEnabled: A.snapEnabled }); };
     return label(text, input);
   }
-  function render() {
-    const box = document.getElementById('efficiencyBox'), previous = box.querySelector('details');
+  const workflow = document.getElementById('efficiencyBox');
+  workflow.append(toggle('保持当前工具（连续标注）', 'continuous'), toggle('吸附（7 屏幕像素）', 'snapEnabled'));
+  workflow.append(button('两点比例标定', () => TOOLMGR.select('calibrate'), '点击已知长度的两端；Esc 取消；照片可能有透视误差'));
+  function renderPresets() {
+    const box = document.getElementById('presetBox'), previous = box.querySelector('details');
     const expanded = !!(previous && previous.open); box.replaceChildren();
-    box.append(toggle('保持当前工具（连续标注）', 'continuous'), toggle('吸附（7 屏幕像素）', 'snapEnabled'));
-    box.append(button('两点比例标定', () => TOOLMGR.select('calibrate'), '点击已知长度的两端；Esc 取消；照片可能有透视误差'));
     const details = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '样式预设'; details.append(summary);
+    details.className = 'sec property-group';
     details.open = expanded;
-    const select = document.createElement('select'); select.id = 'presetSelect';
+    const select = document.createElement('select'); select.id = 'presetSelect'; select.className = 'iselect'; select.setAttribute('aria-label', '样式预设');
+    const actions = document.createElement('div'); actions.className = 'preset-actions';
+    details.append(select, actions);
     builtin.concat(userPresets).forEach((p, i) => { const o = document.createElement('option'); o.value = i; o.textContent = p.name + (i < builtin.length ? '（内置）' : ''); select.append(o); });
     const selected = () => builtin.concat(userPresets)[Number(select.value)];
-    details.append(select, button('设为默认', () => applyDefaults(selected().style)), button('应用到选中', () => applyStyle(selected().style)),
+    actions.append(button('设为默认', () => applyDefaults(selected().style)), button('应用到选中', () => applyStyle(selected().style)),
       button('新建预设', () => {
         const name = window.prompt('预设名称（保存当前默认样式）', '我的预设');
         if (!name || !name.trim()) return;
@@ -143,9 +150,9 @@
         if (merged.length > 100) throw new Error('预设总数超过 100'); userPresets = merged; save();
       } catch (err) { A.toast('预设导入失败：' + err.message); }
     };
-    details.append(button('导入预设', () => input.click()), input); box.append(details);
+    actions.append(button('导入预设', () => input.click()), input); box.append(details);
   }
-  function save() { store('anno-presets', userPresets); render(); }
+  function save() { store('anno-presets', userPresets); renderPresets(); }
   const layerTools = document.createElement('div'); layerTools.className = 'layer-tools';
   [['批量显隐', 'visible'], ['批量锁定', 'lock'], ['逻辑分组', 'group'], ['批量删除', 'delete']].forEach(([title, action]) => layerTools.append(button(title, () => A.batchLayers(action))));
   document.querySelector('.layers-box').insertBefore(layerTools, document.getElementById('layersList'));
@@ -190,5 +197,5 @@
   }
   A.snapObject = snapObject;
   C.on('object:moving', e => snapObject(e.target));
-  render();
+  renderPresets();
 })();

@@ -34,7 +34,7 @@
       dimensions(data.base.w, data.base.h);
       data.settings = data.settings || {};
       const styleSchema = { textProps: window.DEF_TEXT, shapeProps: window.DEF_SHAPE,
-        lineProps: { stroke: '#ff5252', width: 3, dash: null, haloColor: '#ffffff', haloWidth: 2 }, calloutBg: window.DEF_BG };
+        lineProps: { stroke: '#ff5252', width: 3, dash: null, haloColor: '#ffffff', haloWidth: 2, arrowStyle: 'solid' }, calloutBg: window.DEF_BG };
       for (const section of Object.keys(styleSchema)) {
         if (data.settings[section] == null) continue;
         const values = data.settings[section];
@@ -46,7 +46,7 @@
           if (model === null) {
             if (value !== null && (!Array.isArray(value) || value.length > 20 || value.some(n => !Number.isFinite(n) || n < 0 || n > 4096))) throw new Error('默认线形无效');
           } else if (typeof value !== typeof model || typeof value === 'number' && (!Number.isFinite(value) || Math.abs(value) > 4096) || typeof value === 'string' && (value.length > 200 || /url\s*\(/i.test(value))) throw new Error('默认样式无效：' + key);
-          clean[key] = value;
+          clean[key] = key === 'arrowStyle' && !window.fabric.ArrowStyles.includes(value) ? 'solid' : value;
         }
         data.settings[section] = clean;
       }

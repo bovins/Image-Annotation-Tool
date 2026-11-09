@@ -194,6 +194,52 @@
     };
   }
 
+  F.ArrowStyles = Object.freeze(['solid', 'hollow', 'open', 'diamond']);
+  function arrowTip(obj, tip, prev, limitToSegment = false) {
+    if (obj.arrowhead !== 'end') return null;
+    const dx = tip.x - prev.x, dy = tip.y - prev.y, distance = Math.hypot(dx, dy);
+    if (!distance) return null;
+    const ux = dx / distance, uy = dy / distance;
+    const len = limitToSegment ? Math.min(obj.arrowLen, distance) : obj.arrowLen;
+    const half = obj.arrowHalf * len / obj.arrowLen;
+    const diamond = obj.arrowStyle === 'diamond';
+    const base = { x: tip.x - ux * len, y: tip.y - uy * len };
+    const wings = arrowHeadPath(tip, ux, uy, diamond ? len / 2 : len, half);
+    const path = ctx => {
+      ctx.moveTo(wings.x1, wings.y1);
+      ctx.lineTo(tip.x, tip.y);
+      ctx.lineTo(wings.x2, wings.y2);
+      if (diamond) ctx.lineTo(base.x, base.y);
+      if (obj.arrowStyle !== 'open') ctx.closePath();
+    };
+    return { base, path };
+  }
+  function drawArrowLine(ctx, obj, head, shaft) {
+    const s = obj.line;
+    const drawHead = () => { ctx.beginPath(); head.path(ctx); };
+    if (head && obj.arrowStyle === 'hollow') {
+      // Keep the triangle interior clear of both the shaft and its outer halo.
+      const pad = obj.arrowLen + obj.arrowHalf + (s.width || 0) + (s.haloWidth || 0);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(obj._offX - pad, obj._offY - pad, obj.contentW + pad * 2, obj.contentH + pad * 2);
+      head.path(ctx);
+      ctx.clip('evenodd');
+      haloStroke(ctx, s, shaft);
+      haloStroke(ctx, { ...s, dash: null }, () => { drawHead(); ctx.stroke(); });
+      ctx.restore();
+      haloStroke(ctx, { ...s, dash: null, haloWidth: 0 }, () => { drawHead(); ctx.stroke(); });
+    } else {
+      haloStroke(ctx, s, shaft);
+      if (!head) return;
+      if (obj.arrowStyle === 'open') {
+        haloStroke(ctx, { ...s, dash: null }, () => { drawHead(); ctx.stroke(); });
+      } else {
+        haloFill(ctx, s, drawHead);
+      }
+    }
+  }
+
   /* ---------- 内容坐标布局辅助 ----------
      复合对象使用“内容坐标”：对象宽度/高度 = 内容包围盒；
      _offX/_offY 是内容包围盒的左上角（内容坐标），不是对象的画布位置。
@@ -677,6 +723,7 @@
       this.arrowLen = opts.arrowLen || 14;
       this.arrowHalf = opts.arrowHalf || 6;
       this.callSuper('initialize', opts);
+      this.arrowStyle = F.ArrowStyles.includes(opts.arrowStyle) ? opts.arrowStyle : 'solid';
       // 放大手柄命中区，便于抓取拖动
       this.cornerSize = 18;
       this.touchCornerSize = 26;
@@ -693,7 +740,7 @@
         left = Math.min(left, p.x); top = Math.min(top, p.y);
         right = Math.max(right, p.x); bottom = Math.max(bottom, p.y);
       }
-      const M = this.arrowhead === 'end' ? 22 : 8;
+      const M = this.arrowhead === 'end' ? Math.max(22, this.arrowLen, this.arrowHalf) : 8;
       left -= M; top -= M; right += M; bottom += M;
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
@@ -716,10 +763,11 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const pts = this.points, s = this.line;
+      const pts = this.points;
       if (pts.length >= 2) {
         const segs = F.util.parsePath(catmullRomPath(pts));
-        haloStroke(ctx, s, () => {
+        const head = arrowTip(this, pts[pts.length - 1], pts[pts.length - 2]);
+        drawArrowLine(ctx, this, head, () => {
           ctx.beginPath();
           for (const seg of segs) {
             if (seg[0] === 'M') ctx.moveTo(seg[1], seg[2]);
@@ -728,29 +776,14 @@
           }
           ctx.stroke();
         });
-        if (this.arrowhead === 'end') {
-          const tip = pts[pts.length - 1];
-          const prev = pts[pts.length - 2];
-          const dx = tip.x - prev.x, dy = tip.y - prev.y;
-          const L = Math.hypot(dx, dy) || 1;
-          const ux = dx / L, uy = dy / L;
-          const nx = -uy, ny = ux;
-          const b1 = { x: tip.x - ux * this.arrowLen + nx * this.arrowHalf, y: tip.y - uy * this.arrowLen + ny * this.arrowHalf };
-          const b2 = { x: tip.x - ux * this.arrowLen - nx * this.arrowHalf, y: tip.y - uy * this.arrowLen - ny * this.arrowHalf };
-          haloFill(ctx, s, () => {
-            ctx.beginPath();
-            ctx.moveTo(tip.x, tip.y);
-            ctx.lineTo(b1.x, b1.y);
-            ctx.lineTo(b2.x, b2.y);
-            ctx.closePath();
-          });
-        }
       }
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
-        points: this.points, arrowhead: this.arrowhead, line: this.line
+        points: this.points, arrowhead: this.arrowhead, line: this.line,
+        arrowStyle: this.arrowhead === 'end' ? this.arrowStyle : undefined,
+        arrowLen: this.arrowLen, arrowHalf: this.arrowHalf
       });
     }
   });
@@ -1353,6 +1386,7 @@
       this.arrowLen = opts.arrowLen || 14;
       this.arrowHalf = opts.arrowHalf || 6;
       this.callSuper('initialize', opts);
+      this.arrowStyle = F.ArrowStyles.includes(opts.arrowStyle) ? opts.arrowStyle : 'solid';
       this._offX = 0; this._offY = 0;
       this.relayout();
       // 直线/箭头等少量端点可拖动修改；手写（大量点）不生成手柄
@@ -1385,50 +1419,33 @@
         left = Math.min(left, p.x); top = Math.min(top, p.y);
         right = Math.max(right, p.x); bottom = Math.max(bottom, p.y);
       }
-      const M = (this.arrowhead === 'end' ? this.arrowLen : 0) + (this.line.haloWidth || 0) * 2 + 6;
+      const M = (this.arrowhead === 'end' ? Math.max(this.arrowLen, this.arrowHalf) : 0) + (this.line.haloWidth || 0) * 2 + 6;
       left -= M; top -= M; right += M; bottom += M;
       this._offX = left; this._offY = top;
       setContentSize(this, right - left, bottom - top);
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const s = this.line, pts = this.pts;
+      const pts = this.pts;
       if (pts.length >= 2) {
-        const isArrow = this.arrowhead === 'end';
         const tip = pts[pts.length - 1];
         const prev = pts[pts.length - 2];
-        let end = tip, dir = null;
-        if (isArrow) {
-          const dx = tip.x - prev.x, dy = tip.y - prev.y;
-          const L = Math.hypot(dx, dy) || 1;
-          dir = { x: dx / L, y: dy / L };
-          end = { x: tip.x - dir.x * this.arrowLen, y: tip.y - dir.y * this.arrowLen };
-        }
-        haloStroke(ctx, s, () => {
+        const head = arrowTip(this, tip, prev, true);
+        const end = head && this.arrowStyle !== 'open' ? head.base : tip;
+        drawArrowLine(ctx, this, head, () => {
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length - 1; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.lineTo(end.x, end.y);
           ctx.stroke();
         });
-        if (isArrow && dir) {
-          const hl = this.arrowLen, hh = this.arrowHalf;
-          const b1 = { x: tip.x - dir.x * hl + (-dir.y) * hh, y: tip.y - dir.y * hl + dir.x * hh };
-          const b2 = { x: tip.x - dir.x * hl - (-dir.y) * hh, y: tip.y - dir.y * hl - dir.x * hh };
-          haloFill(ctx, s, () => {
-            ctx.beginPath();
-            ctx.moveTo(tip.x, tip.y);
-            ctx.lineTo(b1.x, b1.y);
-            ctx.lineTo(b2.x, b2.y);
-            ctx.closePath();
-          });
-        }
       }
       endContent(ctx);
     },
     toObject(props) {
       return F.util.object.extend(this.callSuper('toObject', props), {
         pts: this.pts, arrowhead: this.arrowhead, line: this.line,
+        arrowStyle: this.arrowhead === 'end' ? this.arrowStyle : undefined,
         arrowLen: this.arrowLen, arrowHalf: this.arrowHalf
       });
     }

@@ -16,7 +16,7 @@
     document.getElementById(side === 'left' ? 'btnSidebar' : 'btnPanel').setAttribute('aria-expanded', String(prefs[side] !== true));
   });
   // Collapsible lower-frequency categories leave the basic tools in easy reach.
-  document.querySelectorAll('.sidebar > .group:not(.global-group)').forEach((group, i) => {
+  document.querySelectorAll('.sidebar > .group').forEach((group, i) => {
     if (!i) return;
     const title = group.querySelector('.gtitle');
     const details = document.createElement('details'), summary = document.createElement('summary');
@@ -27,10 +27,6 @@
     details.append(summary, grid); group.replaceWith(details);
     details.addEventListener('toggle', () => { prefs.categories = prefs.categories || {}; prefs.categories[summary.textContent] = details.open; persist(); });
   });
-  const globalStyles = document.querySelector('.global-group');
-  globalStyles.open = prefs.globalStyles === true;
-  globalStyles.addEventListener('toggle', () => { prefs.globalStyles = globalStyles.open; persist(); });
-
   // Keep the existing buttons/handlers; only decorate their presentation.
   const icons = window.UIIcons;
   const commands = {

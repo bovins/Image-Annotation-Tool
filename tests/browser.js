@@ -279,7 +279,7 @@ const assert = require('assert/strict');
       const after = fabric.AnnotationGeometry.contentOrigin(b);
       const pasted = b.tx.fill === '#654321' && b.textContent === 'target';
       document.getElementById('presetSelect').value = '0';
-      document.querySelector('#efficiencyBox details button').click();
+      document.querySelector('#presetBox details button').click();
       return { before, after, pasted, defaults: APP.lineProps.width, font: APP.textProps.fontFamily };
     });
     assert.equal(result.pasted, true); assert.equal(result.defaults, 1); assert.equal(result.font, 'Arial');
@@ -442,7 +442,8 @@ const assert = require('assert/strict');
     assert.deepEqual(result, [1, 4096, 1, 4096, 1]);
   });
   await test('preset CRUD and actual JSON export/import preserve compatible user styles', async () => {
-    await page.locator('#efficiencyBox details').evaluate(e => { e.open = true; });
+    await page.locator('#btnGlobalProps').click();
+    await page.locator('#presetBox details').evaluate(e => { e.open = true; });
     await page.evaluate(() => { window._originalPrompt = window.prompt; window.prompt = () => 'Offline preset'; });
     await page.getByRole('button', { name: '新建预设', exact: true }).click();
     await page.selectOption('#presetSelect', { label: 'Offline preset' });
@@ -453,11 +454,11 @@ const assert = require('assert/strict');
     const data = JSON.parse(Buffer.concat(chunks).toString());
     assert.equal(data.presets.find(p => p.name === 'Offline preset').style.textProps.fontSize, 42);
     await page.selectOption('#presetSelect', { label: 'Offline preset' });
-    await page.locator('#efficiencyBox details').evaluate(e => { e.open = true; });
-    await page.locator('#efficiencyBox').getByRole('button', { name: '删除', exact: true }).click();
-    await page.locator('#efficiencyBox input[type=file]').setInputFiles({ name: 'presets.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(data)) });
+    await page.locator('#presetBox details').evaluate(e => { e.open = true; });
+    await page.locator('#presetBox').getByRole('button', { name: '删除', exact: true }).click();
+    await page.locator('#presetBox input[type=file]').setInputFiles({ name: 'presets.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(data)) });
     await page.waitForFunction(() => Array.from(document.getElementById('presetSelect').options).some(o => o.textContent === 'Offline preset'));
-    await page.locator('#efficiencyBox details').evaluate(e => { e.open = true; });
+    await page.locator('#presetBox details').evaluate(e => { e.open = true; });
     await page.selectOption('#presetSelect', { label: 'Offline preset' }); await page.getByRole('button', { name: '设为默认', exact: true }).click();
     assert.equal(await page.evaluate(() => APP.textProps.fontSize), 42);
     await page.evaluate(() => { window.prompt = window._originalPrompt; });
@@ -605,6 +606,100 @@ const assert = require('assert/strict');
     } finally {
       await page.evaluate(() => { HTMLCanvasElement.prototype.toBlob = window._originalToBlob; document.querySelector('.export-dialog').close(); });
     }
+  });
+  await test('right inspector switches scopes without changing canvas or overwriting defaults', async () => {
+    await upload(400, 300, 'arrow-styles.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'arrow-styles.png' && !APP.restoring);
+    await page.setViewportSize({ width: 1093, height: 614 });
+    const global = page.locator('#globalPanel'), local = page.locator('#panelContent');
+    const geometry = () => page.evaluate(() => {
+      const { x, y, width, height } = CV.upperCanvasEl.getBoundingClientRect();
+      return [x, y, width, height, ...CV.viewportTransform];
+    });
+    await page.waitForTimeout(350);
+    const before = await geometry();
+    await page.locator('#btnGlobalProps').focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Space');
+    assert.equal(await local.getByText('尚未选择标注').isVisible(), true);
+    assert.equal(await global.isVisible(), false);
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Enter');
+    await global.getByRole('combobox', { name: '箭头样式' }).selectOption({ label: '空心三角' });
+    assert.equal(await page.locator('.sidebar #presetBox, .sidebar #globalStyleBox').count(), 0);
+    const fill = await page.evaluate(() => APP.shapeProps.fillOpacity);
+    await page.locator('[data-tool="msgbox"]').click();
+    await page.locator('#btnGlobalProps').click();
+    assert.equal(await page.evaluate(() => APP.shapeProps.fillOpacity), fill);
+    assert.equal(await page.evaluate(() => TOOLMGR.shapeP().fillOpacity), 1);
+    await page.locator('[data-tool="arrow"]').click();
+    assert.equal(await local.getByRole('combobox', { name: '箭头样式' }).inputValue(), '"hollow"');
+    const box = await page.locator('.upper-canvas').boundingBox();
+    await page.mouse.move(box.x + box.width / 3, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(await page.evaluate(() => CV.getActiveObject().arrowStyle), 'hollow');
+    await local.getByRole('combobox', { name: '箭头样式' }).selectOption({ label: '实心菱形' });
+    const layerId = await page.evaluate(() => CV.getActiveObject().layerId);
+    await page.locator('#btnGlobalProps').click();
+    assert.equal(await global.getByRole('combobox', { name: '箭头样式' }).inputValue(), '"hollow"');
+    assert.equal(await page.evaluate(() => CV.getActiveObject().arrowStyle), 'diamond');
+    await page.locator('#btnObjectProps').click();
+    assert.equal(await local.getByRole('combobox', { name: '箭头样式' }).inputValue(), '"diamond"');
+    await page.evaluate(() => APP.undo());
+    await page.waitForFunction(id => !APP.restoring && CV.getObjects().some(o => o.layerId === id && o.arrowStyle === 'hollow'), layerId);
+    await page.evaluate(() => APP.redo());
+    await page.waitForFunction(id => !APP.restoring && CV.getObjects().some(o => o.layerId === id && o.arrowStyle === 'diamond'), layerId);
+    assert.deepEqual(await geometry(), before);
+    await page.setViewportSize({ width: 1366, height: 768 });
+  });
+  await test('four distinct arrowheads render and survive style transfer and project roundtrip', async () => {
+    const result = await page.evaluate(async () => {
+      CV.discardActiveObject();
+      const results = [];
+      for (const [Klass, pointsKey] of [[fabric.AnnoLine, 'pts'], [fabric.SplinePath, 'points']]) {
+        const options = { arrowhead: 'end', arrowLen: 36, arrowHalf: 15, line: { color: '#f02080', width: 2, haloWidth: 2 },
+          [pointsKey]: [{ x: 20, y: 60 }, { x: 100, y: 60 }] };
+        const arrow = new Klass(options);
+        arrow.set({ left: arrow._offX, top: arrow._offY });
+        CV.add(arrow);
+        const renderings = [];
+        for (const style of fabric.ArrowStyles) {
+          arrow.arrowStyle = style;
+          const canvas = ExportRenderer.render(CV, { range: 'custom', crop: { x: 10, y: 30, w: 110, h: 60 }, scale: 1 }, 'png');
+          const ctx = canvas.getContext('2d');
+          renderings.push({ png: canvas.toDataURL(), center: ctx.getImageData(66, 30, 1, 1).data[3] });
+        }
+        const legacy = Klass.fromObject(options);
+        const roundTrip = Klass.fromObject(JSON.parse(JSON.stringify(arrow.toObject())));
+        results.push({ count: new Set(renderings.map(r => r.png)).size, hollowCenter: renderings[1].center,
+          legacy: legacy.arrowStyle, roundTrip: roundTrip.arrowStyle, length: roundTrip.arrowLen });
+        CV.remove(arrow);
+      }
+      const source = new fabric.AnnoLine({ arrowhead: 'end', arrowStyle: 'open', pts: [{ x: 40, y: 100 }, { x: 100, y: 100 }] });
+      const target = new fabric.SplinePath({ arrowhead: 'end', points: [{ x: 40, y: 140 }, { x: 100, y: 140 }] });
+      const plain = new fabric.AnnoLine({ pts: [{ x: 40, y: 180 }, { x: 100, y: 180 }] });
+      CV.add(source, target, plain);
+      CV.setActiveObject(source); APP.copyStyle(); CV.setActiveObject(target); APP.pasteStyle();
+      const transferred = target.arrowStyle;
+      const oldDefault = APP.lineProps.arrowStyle;
+      document.getElementById('btnGlobalProps').click();
+      const field = document.querySelector('#globalPanel select[aria-label="箭头样式"]');
+      field.value = '"diamond"'; field.dispatchEvent(new Event('change'));
+      Array.from(document.querySelectorAll('#globalPanel button')).find(b => b.textContent === '将样式应用到本图标注').click();
+      const snapshot = APP.workspaceProject();
+      const current = snapshot.tabs[APP.activeTabIndex];
+      const { data } = await ProjectStore.prepare(current);
+      const persisted = data.objects.objects.find(o => o.layerId === target.layerId).arrowStyle;
+      APP.lineProps.arrowStyle = oldDefault;
+      return { results, transferred, persisted, defaultStyle: data.settings.lineProps.arrowStyle, plain: plain.arrowhead };
+    });
+    assert.deepEqual(result.results, Array(2).fill({ count: 4, hollowCenter: 0, legacy: 'solid', roundTrip: 'diamond', length: 36 }));
+    assert.equal(result.transferred, 'open');
+    assert.equal(result.persisted, 'diamond');
+    assert.equal(result.defaultStyle, 'diamond');
+    assert.equal(result.plain, 'none');
   });
   await test('no browser exceptions', () => assert.deepEqual(errors, []));
   await browser.close();
