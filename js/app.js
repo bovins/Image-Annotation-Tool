@@ -1244,6 +1244,7 @@
   const ARROW_OPTIONS = [
     ['实心三角', 'solid'], ['空心三角', 'hollow'], ['开放箭头', 'open'], ['实心菱形', 'diamond']
   ];
+  const ARROW_TOOLS = new Set(['arrow', 'carrow', 'dim', 'ctext', 'cregion', 'cmulti']);
   function arrowSection(obj) {
     const s = sec('箭头');
     const current = obj ? obj.arrowStyle : APP.lineProps.arrowStyle;
@@ -1425,7 +1426,7 @@
       return;
     }
 
-    if (isArrow) p.appendChild(arrowSection(obj));
+    if (F.hasArrowheads(obj)) p.appendChild(arrowSection(obj));
     const t = obj.type;
     if (t === 'annoText') {
       p.appendChild(contentSection(obj));
@@ -1676,6 +1677,7 @@
     const title = tool ? tool.textContent.trim() : '两点比例标定';
     p.appendChild(el('div', 'objhead objname', title));
     p.appendChild(el('p', 'property-caption', id === 'calibrate' ? '在画布上点击已知距离的两端。' : '绘制前可调整当前工具使用的设置。'));
+    if (ARROW_TOOLS.has(id)) p.appendChild(arrowSection());
     switch (id) {
       case 'text':
         p.appendChild(textSection(tp, applyT));
@@ -1701,7 +1703,6 @@
         break;
       }
       case 'line': case 'arrow':
-        if (id === 'arrow') p.appendChild(arrowSection());
         p.appendChild(lineSection(lineTarget(), applyL));
         p.appendChild(el('p', 'fnote', '画完后选中直线/箭头，拖动蓝色圆点端点可调整位置与方向。'));
         break;
@@ -1709,7 +1710,6 @@
         p.appendChild(lineSection(lineTarget(), applyL));
         break;
       case 'carrow': case 'curve':
-        if (id === 'carrow') p.appendChild(arrowSection());
         p.appendChild(lineSection(lineTarget(), applyL));
         p.appendChild(el('p', 'fnote', '画完后选中曲线，拖动蓝色圆点锚点可调整曲线形状。'));
         break;
@@ -2099,7 +2099,7 @@
         o.line.dash = APP.lineProps.dash ? APP.lineProps.dash.slice() : null;
         o.line.haloColor = APP.lineProps.haloColor;
         o.line.haloWidth = APP.lineProps.haloWidth;
-        if (o.arrowhead === 'end') o.arrowStyle = APP.lineProps.arrowStyle;
+        if (F.hasArrowheads(o)) o.arrowStyle = APP.lineProps.arrowStyle;
         changed = true;
       }
       if (o.shape) {

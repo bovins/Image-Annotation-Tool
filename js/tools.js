@@ -597,6 +597,7 @@
       const obj = new F.Dimension({
         p1: p, p2: { x: p.x + 1, y: p.y }, left: 0, top: 0,
         offset: this.sz(26), ext: this.sz(10),
+        arrowStyle: this.props().lineProps.arrowStyle,
         line: this.lineP(), tx: this.textP(),
         scale: window.APP.scale.pxPerUnit, unit: window.APP.scale.unit,
         minScaleLimit: 0.2
@@ -709,6 +710,7 @@
         left: 0, top: 0,
         anchor: { x: p.x, y: p.y },
         textPos: { x: p.x + this.sz(24), y: p.y - this.sz(70) },
+        arrowStyle: this.props().lineProps.arrowStyle,
         textContent: window.APP.textDefault || '标注',
         tx: this.textP(), line: this.lineP(),
         minScaleLimit: 0.2
@@ -735,6 +737,7 @@
         left: 0, top: 0,
         ellipse: { x: p.x, y: p.y, rx: 1, ry: 1 },
         textContent: '区域',
+        arrowStyle: this.props().lineProps.arrowStyle,
         tx: this.textP(), line: this.lineP(),
         shape: this.shapeP(),
         minScaleLimit: 0.2
@@ -843,6 +846,7 @@
           left: 0, top: 0,
           anchors: [],
           textPos: { x: p.x + this.sz(24), y: p.y - this.sz(70) },
+          arrowStyle: this.props().lineProps.arrowStyle,
           textContent: window.APP.textDefault || '标注',
           tx: this.textP(), line: this.lineP(),
           minScaleLimit: 0.2

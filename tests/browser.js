@@ -701,6 +701,69 @@ const assert = require('assert/strict');
     assert.equal(result.defaultStyle, 'diamond');
     assert.equal(result.plain, 'none');
   });
+  await test('leaders and dimensions expose all styles for every tip and keep their geometry', async () => {
+    await upload(400, 300, 'leader-styles.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'leader-styles.png' && !APP.restoring);
+    const result = await page.evaluate(async () => {
+      const p = (x, y) => ({ x, y });
+      const cases = [
+        ['ctext', fabric.CalloutText, { anchor: p(250, 150), textPos: p(130, 60) },
+          [p(250, 150)], () => TOOLMGR.startCtext(p(130, 60))],
+        ['cregion', fabric.CalloutRegion, { ellipse: { x: 260, y: 165, rx: 20, ry: 15 }, textPos: p(235, 60) },
+          [p(260, 150)], () => TOOLMGR.startCregion(p(130, 60))],
+        ['cmulti', fabric.MultiCallout, { anchors: [p(180, 150), p(285, 150)], textPos: p(215, 60) },
+          [p(180, 150), p(285, 150)], () => TOOLMGR.onCmultiDown(p(130, 60))],
+        ['dim', fabric.Dimension, { p1: p(140, 85), p2: p(300, 85), offset: 30, scale: 5, unit: 'mm' },
+          [p(140, 115), p(300, 115)], () => TOOLMGR.startDim(p(130, 60))]
+      ];
+      const selector = 'select[aria-label="箭头样式"]';
+      const field = scope => document.querySelector(scope + ' ' + selector);
+      const choose = (scope, style) => {
+        const select = field(scope);
+        select.value = JSON.stringify(style);
+        select.dispatchEvent(new Event('change'));
+      };
+      const results = [];
+      for (const [tool, Klass, options, tips, begin] of cases) {
+        TOOLMGR.select(tool);
+        choose('#panelContent', 'diamond');
+        begin();
+        const defaultStyle = TOOLMGR.state[tool].obj.arrowStyle;
+        TOOLMGR.select('select');
+        const line = { color: '#f02080', width: 2, haloColor: '#ffffff', haloWidth: 2 };
+        const annotation = new Klass({ ...options, line });
+        annotation.set({ left: annotation._offX, top: annotation._offY });
+        CV.add(annotation); CV.setActiveObject(annotation);
+        const legacy = JSON.parse(field('#panelContent').value);
+        const geometry = () => JSON.stringify([fabric.AnnotationGeometry.contentOrigin(annotation), annotation.label?.()]);
+        const before = geometry();
+        const crops = tips.map(() => new Set());
+        for (const style of fabric.ArrowStyles) {
+          choose('#panelContent', style);
+          tips.forEach(({ x, y }, i) => {
+            const crop = { x: x - 20, y: y - 20, w: 40, h: 40 };
+            crops[i].add(ExportRenderer.render(CV, { range: 'custom', crop, scale: 2 }, 'png').toDataURL());
+          });
+        }
+        APP.flushHistory();
+        const sameGeometry = geometry() === before;
+        results.push({ defaultStyle, legacy, sameGeometry, tipVariations: crops.map(c => c.size), layerId: annotation.layerId });
+        // Keep the completed annotation for the project roundtrip without covering the next fixture.
+        annotation.set('visible', false);
+      }
+      document.getElementById('btnGlobalProps').click();
+      choose('#globalPanel', 'open');
+      Array.from(document.querySelectorAll('#globalPanel button')).find(b => b.textContent === '将样式应用到本图标注').click();
+      const snapshot = APP.workspaceProject().tabs[APP.activeTabIndex];
+      await APP.importProject(snapshot);
+      const restored = results.map(r => CV.getObjects().find(o => o.layerId === r.layerId).arrowStyle);
+      return { results: results.map(({ layerId, ...r }) => r), restored };
+    });
+    assert.deepEqual(result.results, [[4], [4], [4, 4], [4, 4]].map(tipVariations => ({
+      defaultStyle: 'diamond', legacy: 'solid', sameGeometry: true, tipVariations
+    })));
+    assert.deepEqual(result.restored, ['open', 'open', 'open', 'open']);
+  });
   await test('no browser exceptions', () => assert.deepEqual(errors, []));
   await browser.close();
   process.exitCode = failures.length ? 1 : 0;

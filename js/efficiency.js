@@ -70,7 +70,7 @@
         const p = valid.lineProps;
         if (p.stroke != null) o.line.color = p.stroke;
         ['width', 'dash', 'haloColor', 'haloWidth'].forEach(k => { if (k in p) o.line[k] = copy(p[k]); });
-        if (o.arrowhead === 'end' && p.arrowStyle) o.arrowStyle = p.arrowStyle;
+        if (F.hasArrowheads(o) && p.arrowStyle) o.arrowStyle = p.arrowStyle;
       }
       if (['line', 'path'].includes(o.type) && valid.lineProps) {
         const p = valid.lineProps;
@@ -96,7 +96,7 @@
     if (o.shape) clipboard.shapeProps = copy(o.shape);
     if (o.bg) clipboard.calloutBg = copy(o.bg);
     if (o.line) clipboard.lineProps = { stroke: o.line.color, width: o.line.width, dash: o.line.dash, haloColor: o.line.haloColor, haloWidth: o.line.haloWidth };
-    if (o.line && o.arrowhead === 'end') clipboard.lineProps.arrowStyle = o.arrowStyle;
+    if (o.line && F.hasArrowheads(o)) clipboard.lineProps.arrowStyle = o.arrowStyle;
     if (['line', 'path'].includes(o.type)) clipboard.lineProps = { stroke: o.stroke, width: o.strokeWidth, dash: o.strokeDashArray };
     if (o.type === 'rect') clipboard.shapeProps = { stroke: o.stroke, strokeWidth: o.strokeWidth };
     clipboard.shadow = !!o.shadow; A.toast('样式已复制（不含位置、内容和图片）');
