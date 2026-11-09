@@ -222,15 +222,8 @@
     const drawHeads = () => { ctx.beginPath(); traceHeads(); };
     const strokeHeads = () => { drawHeads(); ctx.stroke(); };
     if (obj.arrowStyle === 'hollow') {
-      // Clip against the full drawing surface because a dragged anchor can be outside the object bounds.
       ctx.save();
-      ctx.beginPath();
-      ctx.save();
-      ctx.resetTransform();
-      ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
-      ctx.restore();
-      traceHeads();
-      ctx.clip('evenodd');
+      clipOutsideHeads(ctx, traceHeads);
       haloStroke(ctx, s, shaft);
       haloStroke(ctx, { ...s, dash: null }, strokeHeads);
       ctx.restore();
@@ -244,19 +237,88 @@
       }
     }
   }
-  function drawLeaderArrow(ctx, obj, tip, from) {
-    const dx = tip.x - from.x, dy = tip.y - from.y, distance = Math.hypot(dx, dy);
-    if (!distance) return;
+  function clipOutsideHeads(ctx, traceHeads) {
+    // Anchors can move outside the object's bounds while dragging.
+    ctx.beginPath();
+    ctx.save();
+    ctx.resetTransform();
+    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    traceHeads();
+    ctx.clip('evenodd');
+  }
+  function drawLeaders(ctx, obj, tips, sourceX) {
+    const s = obj.line, y = obj.leaderY;
     const style = obj.arrowStyle;
-    const fullLength = obj.arrowLen + (obj.line.width || 0) * 2;
-    const len = style === 'solid' ? fullLength : Math.min(fullLength, distance);
-    const half = obj.arrowLen * 0.55 * len / fullLength;
-    const head = makeArrowHead(style, tip, dx / distance, dy / distance, len, half);
-    const end = style === 'open' ? tip : head.base;
-    drawArrowLine(ctx, obj, [head], () => {
-      if (style !== 'open' && distance <= len + 1) return;
-      ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(end.x, end.y); ctx.stroke();
-    });
+    const filled = style === 'solid' || style === 'diamond';
+    const width = Math.max(0, s.width || 0), dash = s.dash || [];
+    const fullLength = obj.arrowLen + width * 2;
+    const groups = new Map([[width, [ctx => {
+      ctx.moveTo(obj.x0, y);
+      ctx.lineTo(obj.x1, y);
+    }]]]);
+    const heads = [];
+    for (const tip of tips) {
+      const x = sourceX ?? clamp(tip.x, obj.x0, obj.x1);
+      const dx = tip.x - x, dy = tip.y - y, distance = Math.hypot(dx, dy);
+      if (!distance) continue;
+      const ux = dx / distance, uy = dy / distance;
+      const len = Math.min(fullLength, distance * 0.56);
+      const shaftWidth = Math.min(width, distance * 0.26);
+      const half = Math.max(shaftWidth * 0.85, obj.arrowLen * 0.55 * len / fullLength);
+      const head = makeArrowHead(style, tip, ux, uy, len, half);
+      const end = style === 'open' ? tip : head.base;
+      const overlap = style === 'diamond' ? len / 4 : 0;
+      if (!groups.has(shaftWidth)) groups.set(shaftWidth, []);
+      groups.get(shaftWidth).push(ctx => {
+        ctx.moveTo(x, y);
+        ctx.lineTo(end.x + ux * overlap, end.y + uy * overlap);
+      });
+      if (style === 'open' && !dash.length) groups.get(shaftWidth).push(head.path);
+      else heads.push({ path: head.path, width: shaftWidth });
+    }
+
+    function paintLines(color, halo) {
+      ctx.strokeStyle = color;
+      ctx.setLineDash(dash);
+      groups.forEach((segments, width) => {
+        if (width + halo * 2 <= 0) return;
+        ctx.lineWidth = width + halo * 2;
+        ctx.beginPath();
+        segments.forEach(trace => trace(ctx));
+        ctx.stroke();
+      });
+    }
+    function paintHeads(color, halo) {
+      ctx.fillStyle = ctx.strokeStyle = color;
+      ctx.setLineDash([]);
+      for (const head of heads) {
+        ctx.beginPath();
+        head.path(ctx);
+        if (filled) ctx.fill();
+        const weight = (filled ? 0 : head.width) + halo * 2;
+        if (weight > 0) {
+          ctx.lineWidth = weight;
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.save();
+    ctx.lineCap = ctx.lineJoin = 'round';
+    const ink = s.color || 'transparent';
+    if (style === 'hollow') {
+      ctx.save();
+      for (const head of heads) clipOutsideHeads(ctx, () => head.path(ctx));
+    }
+    if (s.haloWidth > 0 && s.haloColor) {
+      paintLines(s.haloColor, s.haloWidth);
+      paintHeads(s.haloColor, s.haloWidth);
+    }
+    // Paint every outer edge before any foreground so adjacent parts share one outline.
+    paintLines(ink, 0);
+    if (style === 'hollow') ctx.restore();
+    paintHeads(ink, 0);
+    ctx.restore();
   }
 
   /* ---------- 内容坐标布局辅助 ----------
@@ -455,9 +517,6 @@
       this.arrowLen = 12;
       this.callSuper('initialize', opts);
       this.arrowStyle = arrowStyle(opts.arrowStyle);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
       this.relayout();
       this._rebuildControls();
       this.objectCaching = false;
@@ -502,16 +561,7 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const a = this.anchor, s = this.line, ly = this.leaderY;
-      // 水平引出线（长度 = 文本长度 + 边距，文字放在线上方）
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(this.x0, ly);
-        ctx.lineTo(this.x1, ly);
-        ctx.stroke();
-      });
-      // 引出箭头线：从水平线最近点直连锚点（拖动文字时长度随之变化，非固定直角）
-      drawLeaderArrow(ctx, this, a, { x: clamp(a.x, this.x0, this.x1), y: ly });
+      drawLeaders(ctx, this, [this.anchor]);
       // 文字（无方框，放在水平线上方）
       TX.draw(ctx, this.textContent, this.tx, this.textPos.x, this.textPos.y, 1e9);
       endContent(ctx);
@@ -537,7 +587,7 @@
   function makeDraggableControl(getPoint, setPoint) {
     return new F.Control({
       x: 0, y: 0, offsetX: 0, offsetY: 0,
-      cornerSize: 20, touchCornerSize: 30,
+      sizeX: 14, sizeY: 14, touchSizeX: 26, touchSizeY: 26,
       cursorStyleHandler: () => 'move',
       // 增量式拖动：只按鼠标位移增量换算叠加；拖动期间冻结包围盒，其它点原地不动
       actionHandler: function (eventData, transform, x, y) {
@@ -577,9 +627,9 @@
         ctx.save();
         ctx.fillStyle = '#ffffff';
         ctx.strokeStyle = '#5b8def';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.arc(x, y, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         ctx.restore();
@@ -601,9 +651,6 @@
       this.arrowLen = 12;
       this.callSuper('initialize', opts);
       this.arrowStyle = arrowStyle(opts.arrowStyle);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
       this.relayout();
       this._rebuildControls();
       this.objectCaching = false;
@@ -652,18 +699,7 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const s = this.line, ly = this.leaderY;
-      // 水平引出线（长度 = 文本长度 + 边距）
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(this.x0, ly);
-        ctx.lineTo(this.x1, ly);
-        ctx.stroke();
-      });
-      // 每个锚点从水平线最近点引出。
-      for (const a of this.anchors) {
-        drawLeaderArrow(ctx, this, a, { x: clamp(a.x, this.x0, this.x1), y: ly });
-      }
+      drawLeaders(ctx, this, this.anchors);
       // 文字（无方框，放在水平线上方）
       TX.draw(ctx, this.textContent, this.tx, this.textPos.x, this.textPos.y, 1e9);
       endContent(ctx);
@@ -702,9 +738,6 @@
       this.arrowHalf = opts.arrowHalf || 6;
       this.callSuper('initialize', opts);
       this.arrowStyle = arrowStyle(opts.arrowStyle);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
       this._offX = 0; this._offY = 0;
       this.relayout();
       this._rebuildControls();
@@ -833,9 +866,6 @@
       this.arrowLen = 12;
       this.callSuper('initialize', opts);
       this.arrowStyle = arrowStyle(opts.arrowStyle);
-      // 放大手柄命中区，便于抓取拖动
-      this.cornerSize = 18;
-      this.touchCornerSize = 26;
       this.relayout();
       this._rebuildControls();
       this.objectCaching = false;
@@ -883,7 +913,7 @@
     },
     _render(ctx) {
       beginContent(ctx, this);
-      const e = this.ellipse, s = this.line, tp = this.textPos, sh = this.shape, ly = this.leaderY;
+      const e = this.ellipse, tp = this.textPos, sh = this.shape, ly = this.leaderY;
       // 区域（椭圆，半透明填充 + 描边）
       fillStyle(ctx, sh);
       ctx.beginPath(); ctx.ellipse(e.x, e.y, e.rx, e.ry, 0, 0, Math.PI * 2);
@@ -893,16 +923,9 @@
         ctx.beginPath(); ctx.ellipse(e.x, e.y, e.rx, e.ry, 0, 0, Math.PI * 2);
         ctx.stroke();
       });
-      // 水平引出线（长度 = 文本长度 + 边距，文字放在线上方）
-      haloStroke(ctx, s, () => {
-        ctx.beginPath();
-        ctx.moveTo(this.x0, ly);
-        ctx.lineTo(this.x1, ly);
-        ctx.stroke();
-      });
       // 引出箭头线：从椭圆最近点直连水平线（拖动文字/区域时自动伸缩）
       const px = clamp(e.x, this.x0, this.x1);
-      drawLeaderArrow(ctx, this, nearestEllipsePoint(e, px, ly), { x: px, y: ly });
+      drawLeaders(ctx, this, [nearestEllipsePoint(e, px, ly)], px);
       // 文字（无方框，放在水平线上方）
       TX.draw(ctx, this.textContent, this.tx, tp.x, tp.y, 1e9);
       endContent(ctx);

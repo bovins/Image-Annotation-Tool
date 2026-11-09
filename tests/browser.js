@@ -764,6 +764,94 @@ const assert = require('assert/strict');
     })));
     assert.deepEqual(result.restored, ['open', 'open', 'open', 'open']);
   });
+  await test('leader joints stay colored on the canvas and PNG, and short tips stay at their targets', async () => {
+    await upload(400, 300, 'leader-joints.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'leader-joints.png' && !APP.restoring);
+    const results = await page.evaluate(() => {
+      APP.annoShadowOn = false;
+      CV.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      const ux = 0.8, uy = 0.6;
+      const fixture = {
+        textContent: '引出', textPos: { x: 65, y: 55 },
+        tx: { ...DEF_TEXT, fill: '#254657' },
+        line: { color: '#ff5252', width: 3, haloColor: '#ffffff', haloWidth: 2 }
+      };
+      const isRed = (canvas, x, y, scale) => {
+        const [r, g, b, alpha] = canvas.getContext('2d').getImageData(Math.floor(x * scale), Math.floor(y * scale), 1, 1).data;
+        return r > 220 && g < 145 && b < 145 && alpha > 220;
+      };
+      const cases = [fabric.CalloutText, fabric.CalloutRegion, fabric.MultiCallout];
+      return cases.map(Klass => [80, 8].map(distance => {
+        const obj = new Klass(fixture);
+        const { x1, x0, leaderY } = obj;
+        const tip = { x: x1 + ux * distance, y: leaderY + uy * distance };
+        if (obj.type === 'calloutText') obj.anchor = tip;
+        if (obj.type === 'calloutRegion') {
+          obj.ellipse = { x: tip.x + 8 * ux, y: tip.y + 8 * uy, rx: 8, ry: 8 };
+          obj.shape = { ...DEF_SHAPE, stroke: '#254657', strokeWidth: 1, haloWidth: 0, fillOpacity: 0 };
+        }
+        if (obj.type === 'multiCallout') obj.anchors = [tip, { x: x0 - 50, y: leaderY + 50 }];
+        obj.relayout();
+        obj.set({ left: obj._offX, top: obj._offY });
+        CV.add(obj);
+        CV.renderAll();
+        const crop = { x: 0, y: 0, w: 400, h: 300 };
+        const png = ExportRenderer.render(CV, { range: 'custom', crop, scale: 4 }, 'png');
+        const checks = [CV.lowerCanvasEl, png].map((canvas, i) => {
+          const scale = i ? 4 : 1;
+          return distance === 80 ? [
+            isRed(canvas, x1 - 2, leaderY, scale),
+            isRed(canvas, tip.x - 19 * ux, tip.y - 19 * uy, scale)
+          ] : [
+            isRed(canvas, tip.x - 2 * ux, tip.y - 2 * uy, scale),
+            !isRed(canvas, tip.x - 14 * ux, tip.y - 14 * uy, scale)
+          ];
+        });
+        CV.remove(obj);
+        return checks;
+      }));
+    });
+    assert.deepEqual(results, Array.from({ length: 3 }, () => Array.from({ length: 2 }, () => [[true, true], [true, true]])));
+  });
+  await test('pixel selection passes through empty bounds and Alt-click cycles overlapping ink', async () => {
+    await upload(400, 300, 'overlapping-annotations.png');
+    await page.waitForFunction(() => APP.tabs[APP.activeTabIndex].name === 'overlapping-annotations.png' && !APP.restoring);
+    const [bottom, top] = await page.evaluate(() => {
+      TOOLMGR.select('select');
+      CV.setViewportTransform([1.6, 0, 0, 1.6, 20, 0]);
+      const line = { color: '#ff5252', width: 3, haloWidth: 0 };
+      const annotations = [
+        new fabric.AnnoLine({ pts: [{ x: 100, y: 175 }, { x: 255, y: 175 }], line }),
+        new fabric.AnnoLine({ pts: [{ x: 100, y: 100 }, { x: 240, y: 240 }], line })
+      ];
+      for (const o of annotations) {
+        o.set({ left: o._offX, top: o._offY });
+        CV.add(o);
+      }
+      CV.renderAll();
+      return annotations.map(o => o.layerId);
+    });
+    const canvas = await page.locator('.upper-canvas').boundingBox();
+    const click = (x, y) => page.mouse.click(canvas.x + x * 1.6 + 20, canvas.y + y * 1.6);
+    const active = () => page.evaluate(() => CV.getActiveObject()?.layerId);
+    await click(211, 175);
+    assert.equal(await active(), bottom);
+    await click(175, 175);
+    assert.equal(await active(), top);
+    await page.keyboard.down('Alt');
+    try {
+      await click(175, 175);
+      assert.equal(await active(), bottom);
+      await click(175, 175);
+      assert.equal(await active(), top);
+      await page.evaluate(id => {
+        const obj = CV.getObjects().find(o => o.layerId === id);
+        obj.set({ selectable: false, evented: false });
+      }, top);
+      await click(175, 175);
+      assert.equal(await active(), bottom);
+    } finally { await page.keyboard.up('Alt'); }
+  });
   await test('no browser exceptions', () => assert.deepEqual(errors, []));
   await browser.close();
   process.exitCode = failures.length ? 1 : 0;

@@ -63,6 +63,45 @@
   };
   window.APP = APP;
 
+  Object.assign(F.Object.prototype, {
+    borderColor: '#5b8def',
+    cornerColor: '#5b8def',
+    cornerStrokeColor: '#ffffff',
+    cornerSize: 8,
+    touchCornerSize: 26,
+    cornerStyle: 'circle',
+    transparentCorners: false
+  });
+  F.Object.prototype.drawBorders = function (ctx, style = {}) {
+    const size = this._calculateCurrentDimensions();
+    const x = size.x / 2, y = size.y / 2;
+    const armX = Math.min(12, x / 2), armY = Math.min(12, y / 2);
+    ctx.save();
+    ctx.strokeStyle = style.borderColor || this.borderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        ctx.moveTo(sx * (x - armX), sy * y);
+        ctx.lineTo(sx * x, sy * y);
+        ctx.lineTo(sx * x, sy * (y - armY));
+      }
+    }
+    const rotate = this.controls.mtr;
+    if ((style.hasControls ?? this.hasControls) && rotate && this.isControlVisible('mtr')) {
+      ctx.moveTo(rotate.x * size.x, rotate.y * size.y);
+      ctx.lineTo(rotate.x * size.x + rotate.offsetX, rotate.y * size.y + rotate.offsetY);
+    }
+    ctx.stroke();
+    ctx.restore();
+    return this;
+  };
+  const renderGroupControls = F.ActiveSelection.prototype._renderControls;
+  F.ActiveSelection.prototype._renderControls = function (ctx, style) {
+    // The group frame is sufficient. Member frames otherwise overlap the active handles.
+    return renderGroupControls.call(this, ctx, style, { hasBorders: false });
+  };
+
   /* ---------- 画布（无限画布：固定视口 + 平移缩放） ---------- */
   const CV = window.CV = new F.Canvas(document.getElementById('c'), {
     enableRetinaScaling: false,
@@ -73,11 +112,7 @@
     selectionColor: 'rgba(91,141,239,0.25)',
     selectionBorderColor: '#5b8def',
     selectionLineWidth: 1,
-    cornerColor: '#5b8def',
-    cornerStrokeColor: '#ffffff',
-    cornerSize: 10,
-    cornerStyle: 'rect',
-    transparentCorners: false
+    targetFindTolerance: 3
   });
 
   function resizeCanvas() {
@@ -1848,10 +1883,11 @@
 
   /* ---------- 画布事件 ---------- */
   CV.on('object:added', e => {
+    const o = e.target;
+    if (o && !isPinned(o)) o.perPixelTargetFind = true;
     if (APP.skipNextAdd) { APP.skipNextAdd = false; return; }
     if (APP.restoring) return;
-    if (e.target && e.target._temp) return;
-    const o = e.target;
+    if (o && o._temp) return;
     if (o && !isPinned(o)) {
       if (!o.shadow && APP.annoShadowOn) o.shadow = APP.annoShadow;
       if (!o.layerId) APP.assignAnnotationLayer(o);
@@ -2214,7 +2250,20 @@
       cancelViewportAnim();
       panState = { sx: e.clientX, sy: e.clientY, vt: CV.viewportTransform.slice() };
       canvasEl.style.cursor = 'grabbing';
+      return;
     }
+    if (TOOLMGR.current !== 'select' || e.button !== 0 || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const pointer = CV.getPointer(e, true), active = CV.getActiveObject();
+    const matches = CV.getObjects().filter(o =>
+      o.selectable && !o._temp && !isPinned(o) && CV._searchPossibleTargets([o], pointer) === o
+    ).reverse();
+    if (matches.length < 2) return;
+    const next = matches[(matches.indexOf(active) + 1) % matches.length];
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    flushHistory();
+    CV.setActiveObject(next, e);
+    CV.requestRenderAll();
   }, true);
   window.addEventListener('mousemove', e => {
     if (!panState) return;
